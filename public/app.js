@@ -4,6 +4,7 @@ const fileSummary = document.querySelector('#fileSummary');
 const photoResult = document.querySelector('#photoResult');
 const uploadButton = document.querySelector('#uploadButton');
 const connectLink = document.querySelector('#connectLink');
+const themeToggle = document.querySelector('#themeToggle');
 
 const invoiceForm = document.querySelector('#invoiceForm');
 const invoiceItems = document.querySelector('#invoiceItems');
@@ -14,6 +15,7 @@ const invoiceTotal = document.querySelector('#invoiceTotal');
 const invoiceFolderName = document.querySelector('#invoiceFolderName');
 const invoiceDate = document.querySelector('#invoiceDate');
 const copyEmail = document.querySelector('#copyEmail');
+const discountType = document.querySelector('#discountType');
 const discount = document.querySelector('#discount');
 const taxRate = document.querySelector('#taxRate');
 
@@ -29,6 +31,13 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function setTheme(theme) {
+  const nextTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = nextTheme;
+  localStorage.setItem('theme', nextTheme);
+  themeToggle.textContent = nextTheme === 'dark' ? 'Light' : 'Dark';
 }
 
 async function loadStatus() {
@@ -163,7 +172,10 @@ function calculateTotal() {
   }, 0);
   const discountValue = Math.max(Number.parseFloat(discount.value) || 0, 0);
   const taxRateValue = Math.max(Number.parseFloat(taxRate.value) || 0, 0);
-  const taxable = Math.max(subtotal - discountValue, 0);
+  const discountAmount = discountType.value === 'percent'
+    ? subtotal * (Math.min(discountValue, 100) / 100)
+    : Math.min(discountValue, subtotal);
+  const taxable = Math.max(subtotal - discountAmount, 0);
 
   return taxable + taxable * (taxRateValue / 100);
 }
@@ -173,6 +185,10 @@ function updateInvoiceTotal() {
 }
 
 addItemButton.addEventListener('click', () => createItemRow());
+themeToggle.addEventListener('click', () => {
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
+discountType.addEventListener('change', updateInvoiceTotal);
 discount.addEventListener('input', updateInvoiceTotal);
 taxRate.addEventListener('input', updateInvoiceTotal);
 
@@ -192,6 +208,7 @@ invoiceForm.addEventListener('submit', async (event) => {
     invoiceNumber: formData.get('invoiceNumber'),
     invoiceDate: formData.get('invoiceDate'),
     dueDate: formData.get('dueDate'),
+    discountType: formData.get('discountType'),
     discount: formData.get('discount'),
     taxRate: formData.get('taxRate'),
     notes: formData.get('notes'),
@@ -231,6 +248,7 @@ invoiceForm.addEventListener('submit', async (event) => {
   }
 });
 
+setTheme(localStorage.getItem('theme') || 'light');
 createItemRow();
 activateTab(window.location.hash === '#invoice' ? 'invoicePanel' : 'photosPanel');
 loadStatus();

@@ -18,6 +18,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const uploadDir = path.join(__dirname, 'uploads');
 const invoiceDir = path.join(__dirname, 'invoices');
+const invoiceLogoPath = path.join(__dirname, 'public', 'assets', 'logo-light.png');
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(invoiceDir, { recursive: true });
@@ -107,6 +108,30 @@ function sanitizeFileName(name) {
   return normalizeFolderName(name).replace(/[. ]+$/g, '') || 'Detail Job';
 }
 
+function normalizeDriveFolderId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  try {
+    const url = new URL(raw);
+    const folderMatch = url.pathname.match(/\/folders\/([^/?#]+)/);
+    if (folderMatch) {
+      return folderMatch[1];
+    }
+
+    const id = url.searchParams.get('id');
+    if (id) {
+      return id;
+    }
+  } catch {
+    // Plain folder IDs are not valid URLs, so fall through and clean the value.
+  }
+
+  return raw.split(/[?#]/)[0].trim();
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -158,14 +183,18 @@ function todayInputValue() {
 }
 
 async function findOrCreateFolder(drive, folderName) {
-  const parentFolderId = process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID?.trim();
-  const parentQuery = parentFolderId ? ` and '${escapeDriveQuery(parentFolderId)}' in parents` : '';
-  const query = [
+  const parentFolderId = normalizeDriveFolderId(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID);
+  const queryParts = [
     `name = '${escapeDriveQuery(folderName)}'`,
     "mimeType = 'application/vnd.google-apps.folder'",
-    'trashed = false',
-    parentQuery
-  ].join(' ');
+    'trashed = false'
+  ];
+
+  if (parentFolderId) {
+    queryParts.push(`'${escapeDriveQuery(parentFolderId)}' in parents`);
+  }
+
+  const query = queryParts.join(' and ');
 
   const listOptions = {
     q: query,
@@ -283,7 +312,11 @@ function buildInvoiceData(body) {
   }
 
   const subtotal = items.reduce((sum, item) => sum + item.amount, 0);
-  const discount = Math.max(parseMoney(body.discount), 0);
+  const discountType = body.discountType === 'percent' ? 'percent' : 'amount';
+  const discountValue = Math.max(parseMoney(body.discount), 0);
+  const discount = discountType === 'percent'
+    ? subtotal * (Math.min(discountValue, 100) / 100)
+    : Math.min(discountValue, subtotal);
   const taxableAmount = Math.max(subtotal - discount, 0);
   const taxRate = Math.max(parseMoney(body.taxRate), 0);
   const tax = taxableAmount * (taxRate / 100);
@@ -304,6 +337,8 @@ function buildInvoiceData(body) {
     notes: String(body.notes || '').trim(),
     items,
     subtotal,
+    discountType,
+    discountValue,
     discount,
     taxRate,
     tax,
@@ -321,7 +356,12 @@ async function createInvoicePdf(invoice, filePath) {
     doc.on('error', reject);
 
     doc.pipe(stream);
-    doc.font('Helvetica-Bold').fontSize(28).text('Invoice', 50, 45);
+
+    if (fs.existsSync(invoiceLogoPath)) {
+      doc.image(invoiceLogoPath, 50, 36, { width: 74 });
+    }
+
+    doc.font('Helvetica-Bold').fontSize(28).text('Invoice', 140, 45);
     doc.font('Helvetica').fontSize(10);
     doc.text(invoice.businessName, 360, 50, { align: 'right', width: 180 });
 
@@ -394,7 +434,10 @@ async function createInvoicePdf(invoice, filePath) {
 
     if (invoice.discount > 0) {
       y += 20;
-      doc.text('Discount', totalsX, y, { width: 80 });
+      const discountLabel = invoice.discountType === 'percent'
+        ? `Discount (${invoice.discountValue}%)`
+        : 'Discount';
+      doc.text(discountLabel, totalsX - 40, y, { width: 120 });
       doc.text(`-${formatMoney(invoice.discount)}`, moneyX, y, { width: 80, align: 'right' });
     }
 
@@ -638,8 +681,12 @@ app.post('/api/invoice', async (req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   console.error(error);
+  const googleError = error.response?.data?.error;
+  const details = googleError?.errors?.map((item) => item.message).filter(Boolean).join('; ');
+  const message = details || googleError?.message || error.message || 'Something went wrong.';
+
   res.status(500).json({
-    error: error.message || 'Something went wrong.'
+    error: message
   });
 });
 

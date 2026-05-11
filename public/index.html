@@ -10,11 +10,16 @@
     <main class="shell">
       <section class="workspace">
         <div class="topbar">
-          <div>
-            <p class="eyebrow">Google Drive uploader</p>
-            <h1>Detail job folders and invoices</h1>
+          <div class="brand-lockup">
+            <img class="brand-logo logo-light" src="/assets/logo-light.png" alt="Jazz's Detailing" />
+            <img class="brand-logo logo-dark" src="/assets/logo-dark.png" alt="Jazz's Detailing" />
+            <div>
+              <p class="eyebrow">Jazz's Detailing</p>
+              <h1>Detail job folders and invoices</h1>
+            </div>
           </div>
           <div class="auth-actions">
+            <button class="theme-toggle" id="themeToggle" type="button">Dark</button>
             <a class="button" id="connectLink" href="/auth/google">Connect Drive</a>
             <form action="/logout" method="post">
               <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">
@@ -110,9 +115,16 @@
               <button class="secondary" id="addItemButton" type="button">Add service</button>
             </div>
 
-            <div class="grid two">
+            <div class="grid three">
               <div>
-                <label for="discount">Discount</label>
+                <label for="discountType">Discount type</label>
+                <select id="discountType" name="discountType">
+                  <option value="amount">$ amount</option>
+                  <option value="percent">% percent</option>
+                </select>
+              </div>
+              <div>
+                <label for="discount">Discount value</label>
                 <input id="discount" name="discount" type="number" min="0" step="0.01" value="0" />
               </div>
               <div>

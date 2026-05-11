@@ -106,6 +106,10 @@ The app will:
 - Email the customer with the PDF attached.
 - Bcc a copy to your copy email.
 
+Discounts can be entered as either a dollar amount or a percentage. The selected discount type is used in the on-screen total and the generated invoice PDF.
+
+The app includes light and dark themes using the Jazz's Detailing logo assets in `public/assets`.
+
 ## When to send invoices
 
 For one-off detailing jobs, send the invoice immediately after the job is complete and the customer has seen the finished vehicle. Same day is best. For larger jobs, fleets, or recurring commercial clients, use clear terms like due on receipt, Net 7, or Net 15, and send the invoice as soon as the work is completed.
