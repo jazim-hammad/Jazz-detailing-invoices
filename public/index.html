@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Detail Job Drive Manager</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <div class="topbar">
+          <div>
+            <p class="eyebrow">Google Drive uploader</p>
+            <h1>Detail job folders and invoices</h1>
+          </div>
+          <div class="auth-actions">
+            <a class="button" id="connectLink" href="/auth/google">Connect Drive</a>
+            <form action="/logout" method="post">
+              <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">
+                &#x21AA;
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Job tools">
+          <button class="tab active" type="button" data-tab="photosPanel">Photos</button>
+          <button class="tab" type="button" data-tab="invoicePanel">Invoice</button>
+        </nav>
+
+        <section id="photosPanel" class="tool-panel active">
+          <form id="uploadForm" class="panel">
+            <label for="folderName">Vehicle or job name</label>
+            <input
+              id="folderName"
+              name="folderName"
+              type="text"
+              placeholder="2013 Infiniti G37x"
+              autocomplete="off"
+              required
+            />
+
+            <label class="dropzone" for="photos">
+              <input id="photos" name="photos" type="file" accept="image/*" multiple required />
+              <span class="drop-title">Choose photos</span>
+              <span id="fileSummary">Select all the images for this detail job.</span>
+            </label>
+
+            <button class="primary" id="uploadButton" type="submit">Upload to Drive</button>
+          </form>
+
+          <section class="result" id="photoResult" hidden></section>
+        </section>
+
+        <section id="invoicePanel" class="tool-panel">
+          <form id="invoiceForm" class="panel invoice-form">
+            <div class="grid two">
+              <div>
+                <label for="invoiceFolderName">Vehicle or job name</label>
+                <input
+                  id="invoiceFolderName"
+                  name="folderName"
+                  type="text"
+                  placeholder="2013 Infiniti G37x"
+                  autocomplete="off"
+                  required
+                />
+              </div>
+              <div>
+                <label for="customerName">Customer name</label>
+                <input id="customerName" name="customerName" type="text" required />
+              </div>
+            </div>
+
+            <div class="grid two">
+              <div>
+                <label for="customerEmail">Customer email</label>
+                <input id="customerEmail" name="customerEmail" type="email" required />
+              </div>
+              <div>
+                <label for="copyEmail">Copy email</label>
+                <input id="copyEmail" name="copyEmail" type="email" required />
+              </div>
+            </div>
+
+            <div class="grid three">
+              <div>
+                <label for="invoiceNumber">Invoice number</label>
+                <input id="invoiceNumber" name="invoiceNumber" type="text" placeholder="Auto" />
+              </div>
+              <div>
+                <label for="invoiceDate">Invoice date</label>
+                <input id="invoiceDate" name="invoiceDate" type="date" required />
+              </div>
+              <div>
+                <label for="dueDate">Due date</label>
+                <input id="dueDate" name="dueDate" type="date" />
+              </div>
+            </div>
+
+            <div class="line-items">
+              <div class="line-head">
+                <span>Service</span>
+                <span>Qty</span>
+                <span>Rate</span>
+                <span></span>
+              </div>
+              <div id="invoiceItems"></div>
+              <button class="secondary" id="addItemButton" type="button">Add service</button>
+            </div>
+
+            <div class="grid two">
+              <div>
+                <label for="discount">Discount</label>
+                <input id="discount" name="discount" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div>
+                <label for="taxRate">Tax rate %</label>
+                <input id="taxRate" name="taxRate" type="number" min="0" step="0.01" value="0" />
+              </div>
+            </div>
+
+            <label for="notes">Notes</label>
+            <textarea id="notes" name="notes" rows="4" placeholder="Payment terms, thank-you note, or warranty note"></textarea>
+
+            <div class="invoice-total">
+              <span>Total</span>
+              <strong id="invoiceTotal">$0.00</strong>
+            </div>
+
+            <button class="primary" id="invoiceButton" type="submit">Create and email invoice</button>
+          </form>
+
+          <section class="result" id="invoiceResult" hidden></section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
