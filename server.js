@@ -145,6 +145,15 @@ function sanitizeHeader(value) {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
 }
 
+function formatPersonName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
+    .replace(/([-'’])[a-z]/g, (match) => match.toUpperCase());
+}
+
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -261,7 +270,7 @@ async function uploadDriveFile(drive, { filePath, filename, mimeType, folderId }
 
 function buildInvoiceData(body) {
   const folderName = normalizeFolderName(body.folderName || '');
-  const customerName = String(body.customerName || '').trim();
+  const customerName = formatPersonName(body.customerName);
   const customerEmail = String(body.customerEmail || '').trim();
   const copyEmail = String(
     body.copyEmail || process.env.INVOICE_COPY_EMAIL || process.env.BUSINESS_EMAIL || ''

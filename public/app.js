@@ -14,6 +14,7 @@ const invoiceButton = document.querySelector('#invoiceButton');
 const invoiceResult = document.querySelector('#invoiceResult');
 const invoiceTotal = document.querySelector('#invoiceTotal');
 const invoiceFolderName = document.querySelector('#invoiceFolderName');
+const customerName = document.querySelector('#customerName');
 const invoiceDate = document.querySelector('#invoiceDate');
 const copyEmail = document.querySelector('#copyEmail');
 const discountType = document.querySelector('#discountType');
@@ -34,6 +35,15 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function formatPersonName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
+    .replace(/([-'’])[a-z]/g, (match) => match.toUpperCase());
 }
 
 function setTheme(theme) {
@@ -267,6 +277,9 @@ themeToggle.addEventListener('click', () => {
 discountType.addEventListener('change', updateInvoiceTotal);
 discount.addEventListener('input', updateInvoiceTotal);
 taxRate.addEventListener('input', updateInvoiceTotal);
+customerName.addEventListener('blur', () => {
+  customerName.value = formatPersonName(customerName.value);
+});
 
 invoiceForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -278,7 +291,7 @@ invoiceForm.addEventListener('submit', async (event) => {
   const formData = new FormData(invoiceForm);
   const body = {
     folderName: formData.get('folderName'),
-    customerName: formData.get('customerName'),
+    customerName: formatPersonName(formData.get('customerName')),
     customerEmail: formData.get('customerEmail'),
     copyEmail: formData.get('copyEmail'),
     invoiceNumber: formData.get('invoiceNumber'),
