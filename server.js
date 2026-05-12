@@ -18,7 +18,9 @@ const app = express();
 const port = process.env.PORT || 3000;
 const uploadDir = path.join(__dirname, 'uploads');
 const invoiceDir = path.join(__dirname, 'invoices');
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, 'data');
 const storePath = path.join(dataDir, 'app-data.json');
 const invoiceLogoPath = path.join(__dirname, 'public', 'assets', 'logo-light.png');
 const invoicePrefix = 'jd';
@@ -77,12 +79,18 @@ function createOAuthClient() {
 }
 
 function getGoogleAuth(req) {
-  if (!req.session.tokens) {
+  const tokens = req.session.tokens || getStoredGoogleTokens();
+  if (!tokens) {
     return null;
   }
 
   const auth = createOAuthClient();
-  auth.setCredentials(req.session.tokens);
+  auth.setCredentials(tokens);
+  auth.on('tokens', (newTokens) => {
+    const mergedTokens = saveGoogleTokens(newTokens);
+    req.session.tokens = mergedTokens;
+  });
+  req.session.tokens = tokens;
   return auth;
 }
 
@@ -225,6 +233,7 @@ function todayInputValue() {
 function emptyStore() {
   return {
     invoiceOffset: 0,
+    googleTokens: null,
     jobs: [],
     invoices: []
   };
@@ -247,6 +256,26 @@ function readStore() {
 
 function writeStore(store) {
   fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+}
+
+function getStoredGoogleTokens() {
+  return readStore().googleTokens;
+}
+
+function saveGoogleTokens(tokens) {
+  const store = readStore();
+  store.googleTokens = {
+    ...(store.googleTokens || {}),
+    ...tokens
+  };
+  writeStore(store);
+  return store.googleTokens;
+}
+
+function clearGoogleTokens() {
+  const store = readStore();
+  store.googleTokens = null;
+  writeStore(store);
 }
 
 function invoiceNumberForOffset(offset) {
@@ -740,8 +769,10 @@ function removeTempFiles(files = []) {
 }
 
 app.get('/api/status', (req, res) => {
+  const hasTokens = Boolean(req.session.tokens || getStoredGoogleTokens());
+
   res.json({
-    signedIn: Boolean(req.session.tokens),
+    signedIn: hasTokens,
     parentFolderConfigured: Boolean(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID?.trim()),
     invoiceDefaults: {
       businessEmail: process.env.BUSINESS_EMAIL || '',
@@ -751,6 +782,10 @@ app.get('/api/status', (req, res) => {
       emailMessage: defaultEmailMessage
     }
   });
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
 });
 
 app.get('/api/invoice-sequence', (_req, res) => {
@@ -840,7 +875,7 @@ app.get('/oauth2callback', async (req, res, next) => {
   try {
     const auth = createOAuthClient();
     const { tokens } = await auth.getToken(req.query.code);
-    req.session.tokens = tokens;
+    req.session.tokens = saveGoogleTokens(tokens);
     res.redirect('/');
   } catch (error) {
     next(error);
@@ -848,6 +883,7 @@ app.get('/oauth2callback', async (req, res, next) => {
 });
 
 app.post('/logout', (req, res) => {
+  clearGoogleTokens();
   req.session.destroy(() => {
     res.redirect('/');
   });
