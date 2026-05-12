@@ -52,14 +52,15 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
 
 .shell {
-  min-height: 100vh;
+  min-height: 100svh;
   display: grid;
-  place-items: center;
+  place-items: start center;
   padding: 32px 18px;
 }
 
@@ -115,6 +116,7 @@ h1 {
   font-size: clamp(2rem, 4vw, 3.8rem);
   line-height: 1;
   letter-spacing: 0;
+  text-wrap: balance;
 }
 
 .auth-actions {
@@ -176,6 +178,15 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
+}
+
+.tab,
+.button,
+.primary,
+.secondary,
+.theme-toggle,
+.icon-button {
+  touch-action: manipulation;
 }
 
 .tab {
@@ -277,6 +288,56 @@ textarea:focus {
   font-weight: 600;
 }
 
+.photo-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(126px, 1fr));
+  gap: 12px;
+}
+
+.photo-preview {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.photo-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  color: #ffffff;
+  background: rgba(169, 50, 38, 0.94);
+  cursor: pointer;
+  font-size: 1.15rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.photo-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: var(--field-bg);
+}
+
+.photo-preview figcaption {
+  overflow: hidden;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .primary {
   width: 100%;
   min-height: 54px;
@@ -334,6 +395,14 @@ textarea:focus {
   align-items: center;
 }
 
+.line-field {
+  display: block;
+}
+
+.line-field span {
+  display: none;
+}
+
 .line-head {
   color: var(--muted);
   font-size: 0.86rem;
@@ -376,19 +445,43 @@ textarea:focus {
   font-weight: 800;
 }
 
-@media (max-width: 680px) {
+@media (max-width: 760px) {
+  .shell {
+    padding: 18px 12px 42px;
+  }
+
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+    gap: 16px;
+    margin-bottom: 16px;
   }
 
   .brand-lockup {
-    align-items: flex-start;
+    align-items: center;
+    gap: 12px;
   }
 
   .brand-logo {
-    width: 82px;
-    height: 82px;
+    width: 74px;
+    height: 74px;
+  }
+
+  .eyebrow {
+    margin-bottom: 5px;
+    font-size: 0.78rem;
+  }
+
+  h1 {
+    max-width: 12em;
+    font-size: 1.7rem;
+    line-height: 1.05;
+  }
+
+  .auth-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 46px;
+    gap: 8px;
   }
 
   .auth-actions,
@@ -397,24 +490,140 @@ textarea:focus {
     width: 100%;
   }
 
+  .auth-actions form {
+    width: 46px;
+  }
+
   .tabs {
     display: grid;
     grid-template-columns: 1fr 1fr;
     width: 100%;
+    margin-bottom: 12px;
+  }
+
+  .panel {
+    gap: 13px;
+    padding: 16px;
+  }
+
+  .result {
+    padding: 14px;
+  }
+
+  input[type="text"],
+  input[type="email"],
+  input[type="date"],
+  input[type="number"],
+  select {
+    min-height: 48px;
+    font-size: 16px;
+  }
+
+  textarea {
+    font-size: 16px;
+  }
+
+  .dropzone {
+    min-height: 154px;
+    padding: 20px 16px;
+  }
+
+  .drop-title {
+    font-size: 1.15rem;
+  }
+
+  .photo-preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .grid.two,
-  .grid.three,
-  .line-head,
-  .line-item {
+  .grid.three {
     grid-template-columns: 1fr;
+  }
+
+  .line-item {
+    grid-template-columns: 1fr 0.72fr 0.9fr 44px;
+    gap: 8px;
+    align-items: end;
   }
 
   .line-head {
     display: none;
   }
 
+  .line-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .line-field span {
+    display: block;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 850;
+  }
+
   .line-item .icon-button {
+    width: 44px;
+    height: 48px;
+  }
+
+  .invoice-total {
+    min-height: 54px;
+  }
+}
+
+@media (max-width: 430px) {
+  .shell {
+    padding-inline: 10px;
+  }
+
+  .brand-logo {
+    width: 64px;
+    height: 64px;
+  }
+
+  h1 {
+    font-size: 1.45rem;
+  }
+
+  .auth-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .auth-actions form {
+    grid-column: 1 / -1;
     width: 100%;
+  }
+
+  .auth-actions .icon-button {
+    width: 100%;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .line-item {
+    grid-template-columns: 1fr 0.72fr;
+  }
+
+  .line-field:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .line-item .icon-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .photo-preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .photo-preview figcaption {
+    padding-inline: 8px;
+    font-size: 0.72rem;
   }
 }

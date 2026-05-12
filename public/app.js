@@ -1,6 +1,7 @@
 const uploadForm = document.querySelector('#uploadForm');
 const photos = document.querySelector('#photos');
 const fileSummary = document.querySelector('#fileSummary');
+const photoPreviewGrid = document.querySelector('#photoPreviewGrid');
 const photoResult = document.querySelector('#photoResult');
 const uploadButton = document.querySelector('#uploadButton');
 const connectLink = document.querySelector('#connectLink');
@@ -23,6 +24,8 @@ const money = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD'
 });
+let photoPreviewUrls = [];
+let selectedPhotoFiles = [];
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -77,9 +80,70 @@ document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => activateTab(tab.dataset.tab));
 });
 
-photos.addEventListener('change', () => {
-  const count = photos.files.length;
+function clearPhotoPreviews() {
+  photoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  photoPreviewUrls = [];
+  photoPreviewGrid.innerHTML = '';
+}
+
+function photoFileKey(file) {
+  return `${file.name}-${file.size}-${file.lastModified}`;
+}
+
+function syncPhotoInput() {
+  const transfer = new DataTransfer();
+  selectedPhotoFiles.forEach((file) => transfer.items.add(file));
+  photos.files = transfer.files;
+}
+
+function updateFileSummary() {
+  const count = selectedPhotoFiles.length;
+  if (count === 0) {
+    fileSummary.textContent = 'Select all the images for this detail job.';
+    return;
+  }
+
   fileSummary.textContent = count === 1 ? '1 photo selected.' : `${count} photos selected.`;
+}
+
+function removeSelectedPhoto(index) {
+  selectedPhotoFiles.splice(index, 1);
+  syncPhotoInput();
+  updateFileSummary();
+  renderPhotoPreviews();
+}
+
+function renderPhotoPreviews() {
+  clearPhotoPreviews();
+
+  selectedPhotoFiles.forEach((file, index) => {
+    const url = URL.createObjectURL(file);
+    photoPreviewUrls.push(url);
+
+    const item = document.createElement('figure');
+    item.className = 'photo-preview';
+    item.innerHTML = `
+      <button class="photo-remove" type="button" title="Remove photo" aria-label="Remove ${escapeHtml(file.name)}">&times;</button>
+      <img src="${url}" alt="${escapeHtml(file.name)}" />
+      <figcaption>${escapeHtml(file.name)}</figcaption>
+    `;
+    item.querySelector('.photo-remove').addEventListener('click', () => removeSelectedPhoto(index));
+    photoPreviewGrid.append(item);
+  });
+}
+
+photos.addEventListener('change', () => {
+  const knownFiles = new Set(selectedPhotoFiles.map(photoFileKey));
+  [...photos.files].forEach((file) => {
+    if (!knownFiles.has(photoFileKey(file))) {
+      selectedPhotoFiles.push(file);
+      knownFiles.add(photoFileKey(file));
+    }
+  });
+
+  syncPhotoInput();
+  updateFileSummary();
+  renderPhotoPreviews();
 });
 
 document.querySelector('#folderName').addEventListener('input', (event) => {
@@ -119,7 +183,10 @@ uploadForm.addEventListener('submit', async (event) => {
     `);
 
     uploadForm.reset();
-    fileSummary.textContent = 'Select all the images for this detail job.';
+    selectedPhotoFiles = [];
+    syncPhotoInput();
+    updateFileSummary();
+    clearPhotoPreviews();
   } catch (error) {
     renderResult(photoResult, escapeHtml(error.message), true);
   } finally {
@@ -132,9 +199,18 @@ function createItemRow(item = {}) {
   const row = document.createElement('div');
   row.className = 'line-item';
   row.innerHTML = `
-    <input class="item-description" type="text" placeholder="Complete detail" value="${escapeHtml(item.description || '')}" required />
-    <input class="item-quantity" type="number" min="0" step="0.01" value="${escapeHtml(item.quantity || '1')}" required />
-    <input class="item-rate" type="number" min="0" step="0.01" value="${escapeHtml(item.rate || '')}" required />
+    <label class="line-field">
+      <span>Service</span>
+      <input class="item-description" type="text" placeholder="Complete detail" value="${escapeHtml(item.description || '')}" required />
+    </label>
+    <label class="line-field">
+      <span>Qty</span>
+      <input class="item-quantity" type="number" min="0" step="0.01" placeholder="1" value="${escapeHtml(item.quantity || '1')}" required />
+    </label>
+    <label class="line-field">
+      <span>Rate</span>
+      <input class="item-rate" type="number" min="0" step="0.01" placeholder="0.00" value="${escapeHtml(item.rate || '')}" required />
+    </label>
     <button class="icon-button remove-item" type="button" title="Remove service" aria-label="Remove service">&times;</button>
   `;
 
