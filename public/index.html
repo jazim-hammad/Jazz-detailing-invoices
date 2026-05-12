@@ -9,6 +9,7 @@
   <body>
     <main class="shell">
       <section class="workspace">
+        <datalist id="jobSuggestions"></datalist>
         <div class="topbar">
           <div class="brand-lockup">
             <img class="brand-logo logo-light" src="/assets/logo-light.png" alt="Jazz's Detailing" />
@@ -41,7 +42,17 @@
               id="folderName"
               name="folderName"
               type="text"
-              placeholder="2013 Infiniti G37x"
+              placeholder="(enter vehicle)"
+              list="jobSuggestions"
+              autocomplete="off"
+              required
+            />
+            <label for="photoLicensePlate">License plate</label>
+            <input
+              id="photoLicensePlate"
+              name="licensePlate"
+              type="text"
+              placeholder="ABC1234"
               autocomplete="off"
               required
             />
@@ -69,32 +80,44 @@
                   id="invoiceFolderName"
                   name="folderName"
                   type="text"
-                  placeholder="2013 Infiniti G37x"
+                  placeholder="(enter vehicle)"
+                  list="jobSuggestions"
                   autocomplete="off"
                   required
                 />
               </div>
               <div>
-                <label for="customerName">Customer name</label>
-                <input id="customerName" name="customerName" type="text" required />
+                <label for="licensePlate">License plate</label>
+                <input id="licensePlate" name="licensePlate" type="text" placeholder="ABC1234" autocomplete="off" required />
               </div>
             </div>
 
             <div class="grid two">
               <div>
+                <label for="customerName">Customer name</label>
+                <input id="customerName" name="customerName" type="text" required />
+              </div>
+              <div>
                 <label for="customerEmail">Customer email</label>
                 <input id="customerEmail" name="customerEmail" type="email" required />
               </div>
+            </div>
+
+            <div class="grid two">
               <div>
                 <label for="copyEmail">Copy email</label>
                 <input id="copyEmail" name="copyEmail" type="email" required />
+              </div>
+              <div>
+                <label for="invoiceNumber">Next invoice number</label>
+                <input id="invoiceNumber" name="invoiceNumber" type="text" value="jd-100" readonly />
               </div>
             </div>
 
             <div class="grid three">
               <div>
-                <label for="invoiceNumber">Invoice number</label>
-                <input id="invoiceNumber" name="invoiceNumber" type="text" placeholder="Auto" />
+                <label for="invoiceOffset">Reset invoice offset</label>
+                <input id="invoiceOffset" type="number" min="0" step="1" placeholder="0" />
               </div>
               <div>
                 <label for="invoiceDate">Invoice date</label>
@@ -104,6 +127,10 @@
                 <label for="dueDate">Due date</label>
                 <input id="dueDate" name="dueDate" type="date" />
               </div>
+            </div>
+            <div class="form-actions">
+              <button class="secondary" id="resetInvoiceButton" type="button">Reset invoice number</button>
+              <button class="secondary danger-secondary" id="clearInvoiceButton" type="button">Clear invoice form</button>
             </div>
 
             <div class="line-items">
@@ -138,6 +165,9 @@
             <label for="notes">Notes</label>
             <textarea id="notes" name="notes" rows="4" placeholder="Payment terms, thank-you note, or warranty note"></textarea>
 
+            <label for="emailMessage">Email message</label>
+            <textarea id="emailMessage" name="emailMessage" rows="5"></textarea>
+
             <div class="invoice-total">
               <span>Total</span>
               <strong id="invoiceTotal">$0.00</strong>
@@ -147,6 +177,10 @@
           </form>
 
           <section class="result" id="invoiceResult" hidden></section>
+          <section class="history-panel" id="jobHistory" hidden>
+            <h2>Previous invoices</h2>
+            <div id="jobHistoryList"></div>
+          </section>
         </section>
       </section>
     </main>

@@ -1,5 +1,7 @@
 const uploadForm = document.querySelector('#uploadForm');
 const photos = document.querySelector('#photos');
+const folderName = document.querySelector('#folderName');
+const photoLicensePlate = document.querySelector('#photoLicensePlate');
 const fileSummary = document.querySelector('#fileSummary');
 const photoPreviewGrid = document.querySelector('#photoPreviewGrid');
 const photoResult = document.querySelector('#photoResult');
@@ -14,12 +16,23 @@ const invoiceButton = document.querySelector('#invoiceButton');
 const invoiceResult = document.querySelector('#invoiceResult');
 const invoiceTotal = document.querySelector('#invoiceTotal');
 const invoiceFolderName = document.querySelector('#invoiceFolderName');
+const licensePlate = document.querySelector('#licensePlate');
 const customerName = document.querySelector('#customerName');
+const customerEmail = document.querySelector('#customerEmail');
 const invoiceDate = document.querySelector('#invoiceDate');
+const invoiceNumber = document.querySelector('#invoiceNumber');
+const invoiceOffset = document.querySelector('#invoiceOffset');
+const resetInvoiceButton = document.querySelector('#resetInvoiceButton');
+const clearInvoiceButton = document.querySelector('#clearInvoiceButton');
 const copyEmail = document.querySelector('#copyEmail');
 const discountType = document.querySelector('#discountType');
 const discount = document.querySelector('#discount');
 const taxRate = document.querySelector('#taxRate');
+const notes = document.querySelector('#notes');
+const emailMessage = document.querySelector('#emailMessage');
+const jobSuggestions = document.querySelector('#jobSuggestions');
+const jobHistory = document.querySelector('#jobHistory');
+const jobHistoryList = document.querySelector('#jobHistoryList');
 
 const money = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -27,6 +40,14 @@ const money = new Intl.NumberFormat('en-US', {
 });
 let photoPreviewUrls = [];
 let selectedPhotoFiles = [];
+let knownJobs = [];
+let jobSearchTimer;
+let activeLoadedJob = null;
+let defaultCopyEmail = '';
+let defaultInvoiceDate = '';
+let defaultEmailMessageText = '';
+let pendingSendTimeout;
+let pendingSendInterval;
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -37,13 +58,31 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function formatPersonName(value) {
+function formatTitleCase(value) {
   return String(value || '')
     .trim()
     .replace(/\s+/g, ' ')
     .toLowerCase()
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
-    .replace(/([-'’])[a-z]/g, (match) => match.toUpperCase());
+    .replace(/([\-'])[a-z]/g, (match) => match.toUpperCase());
+}
+
+function formatPersonName(value) {
+  return formatTitleCase(value);
+}
+
+function formatServiceDescription(value) {
+  return formatTitleCase(value);
+}
+
+function normalizeLicensePlate(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function defaultEmailMessage() {
+  return `Thank you for choosing Jazz's Detailing. Attached is your invoice for today's service.
+
+We appreciate your business and hope you enjoy your cleaner, shinier, protected vehicle.`;
 }
 
 function setTheme(theme) {
@@ -56,15 +95,24 @@ function setTheme(theme) {
 async function loadStatus() {
   const response = await fetch('/api/status');
   const status = await response.json();
+  defaultCopyEmail = status.invoiceDefaults.copyEmail || '';
+  defaultInvoiceDate = status.invoiceDefaults.today || '';
+  defaultEmailMessageText = status.invoiceDefaults.emailMessage || defaultEmailMessage();
   connectLink.textContent = status.signedIn ? 'Google connected' : 'Connect Google';
   connectLink.classList.toggle('connected', status.signedIn);
 
   if (!invoiceDate.value) {
-    invoiceDate.value = status.invoiceDefaults.today;
+    invoiceDate.value = defaultInvoiceDate;
   }
 
-  if (!copyEmail.value && status.invoiceDefaults.copyEmail) {
-    copyEmail.value = status.invoiceDefaults.copyEmail;
+  if (!copyEmail.value && defaultCopyEmail) {
+    copyEmail.value = defaultCopyEmail;
+  }
+
+  invoiceNumber.value = status.invoiceDefaults.nextInvoiceNumber || 'jd-100';
+
+  if (!emailMessage.value) {
+    emailMessage.value = defaultEmailMessageText;
   }
 }
 
@@ -89,6 +137,174 @@ function activateTab(panelId) {
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => activateTab(tab.dataset.tab));
 });
+
+function renderJobSuggestions() {
+  jobSuggestions.innerHTML = '';
+
+  knownJobs.forEach((job) => {
+    const option = document.createElement('option');
+    option.value = job.folderName;
+    option.label = [
+      job.vehicleName,
+      job.licensePlate,
+      job.source === 'drive' ? 'Drive folder' : 'Saved job'
+    ].filter(Boolean).join(' - ');
+    jobSuggestions.append(option);
+  });
+}
+
+async function searchJobs(query) {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) {
+    knownJobs = [];
+    renderJobSuggestions();
+    return;
+  }
+
+  const response = await fetch(`/api/jobs?q=${encodeURIComponent(trimmed)}`);
+  const data = await response.json();
+  knownJobs = data.jobs || [];
+  renderJobSuggestions();
+}
+
+function queueJobSearch(query) {
+  window.clearTimeout(jobSearchTimer);
+  jobSearchTimer = window.setTimeout(() => {
+    searchJobs(query).catch(() => {});
+  }, 220);
+}
+
+function renderJobHistory(invoices = []) {
+  if (!invoices.length) {
+    jobHistory.hidden = true;
+    jobHistoryList.innerHTML = '';
+    return;
+  }
+
+  jobHistory.hidden = false;
+  jobHistoryList.innerHTML = invoices.map((invoice) => `
+    <article class="history-item">
+      <div>
+        <strong>${escapeHtml(invoice.invoiceNumber)}</strong>
+        <span>${escapeHtml(invoice.invoiceDate || '')}</span>
+      </div>
+      <div>
+        <span>${money.format(invoice.total || 0)}</span>
+        <a href="${invoice.fileLink}" target="_blank" rel="noreferrer">Open invoice</a>
+      </div>
+    </article>
+  `).join('');
+}
+
+function fillInvoiceFromJob(job) {
+  if (!job) {
+    return;
+  }
+
+  activeLoadedJob = job;
+  invoiceFolderName.value = job.vehicleName || job.folderName || '';
+  licensePlate.value = normalizeLicensePlate(job.licensePlate);
+  folderName.value = invoiceFolderName.value;
+  photoLicensePlate.value = licensePlate.value;
+
+  if (job.customerName) {
+    customerName.value = formatPersonName(job.customerName);
+  }
+
+  if (job.customerEmail) {
+    customerEmail.value = job.customerEmail;
+  }
+
+  if (job.copyEmail) {
+    copyEmail.value = job.copyEmail;
+  }
+
+  if (job.items?.length) {
+    invoiceItems.innerHTML = '';
+    job.items.forEach((item) => createItemRow(item));
+  }
+
+  if (job.discountType) {
+    discountType.value = job.discountType;
+  }
+
+  if (job.discount !== undefined) {
+    discount.value = job.discount;
+  }
+
+  if (job.taxRate !== undefined) {
+    taxRate.value = job.taxRate;
+  }
+
+  if (job.notes !== undefined) {
+    notes.value = job.notes;
+  }
+
+  if (job.emailMessage) {
+    emailMessage.value = job.emailMessage;
+  }
+
+  updateInvoiceTotal();
+  renderJobHistory(job.invoices || []);
+}
+
+function loadedJobMatchesInvoiceInputs() {
+  if (!activeLoadedJob) {
+    return true;
+  }
+
+  const vehicleValue = invoiceFolderName.value.trim().toLowerCase();
+  const plateValue = normalizeLicensePlate(licensePlate.value).toLowerCase();
+  const possibleVehicleValues = [
+    activeLoadedJob.vehicleName,
+    activeLoadedJob.folderName
+  ].filter(Boolean).map((value) => value.trim().toLowerCase());
+
+  return possibleVehicleValues.includes(vehicleValue)
+    && normalizeLicensePlate(activeLoadedJob.licensePlate).toLowerCase() === plateValue;
+}
+
+function clearInvoiceForm({ keepVehicle = false, keepPlate = false } = {}) {
+  const vehicleValue = keepVehicle ? invoiceFolderName.value : '';
+  const plateValue = keepPlate ? normalizeLicensePlate(licensePlate.value) : '';
+
+  activeLoadedJob = null;
+  invoiceFolderName.value = vehicleValue;
+  folderName.value = vehicleValue;
+  licensePlate.value = plateValue;
+  photoLicensePlate.value = plateValue;
+  customerName.value = '';
+  customerEmail.value = '';
+  dueDate.value = '';
+  copyEmail.value = defaultCopyEmail || copyEmail.value;
+  invoiceDate.value = defaultInvoiceDate || invoiceDate.value;
+  notes.value = '';
+  emailMessage.value = defaultEmailMessageText || defaultEmailMessage();
+  discountType.value = 'amount';
+  discount.value = '0';
+  taxRate.value = '0';
+  invoiceItems.innerHTML = '';
+  createItemRow();
+  renderJobHistory([]);
+  invoiceResult.hidden = true;
+  invoiceResult.innerHTML = '';
+  updateInvoiceTotal();
+}
+
+function clearStaleLoadedJobDetails(options = {}) {
+  if (activeLoadedJob && !loadedJobMatchesInvoiceInputs()) {
+    clearInvoiceForm({ keepVehicle: true, ...options });
+  }
+}
+
+function maybeFillJobFromInput(value) {
+  const match = knownJobs.find((job) => {
+    const choices = [job.folderName, job.vehicleName].filter(Boolean).map((item) => item.toLowerCase());
+    return choices.includes(value.trim().toLowerCase());
+  });
+
+  fillInvoiceFromJob(match);
+}
 
 function clearPhotoPreviews() {
   photoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -156,9 +372,39 @@ photos.addEventListener('change', () => {
   renderPhotoPreviews();
 });
 
-document.querySelector('#folderName').addEventListener('input', (event) => {
+folderName.addEventListener('input', (event) => {
   if (!invoiceFolderName.value) {
     invoiceFolderName.value = event.target.value;
+  }
+
+  queueJobSearch(event.target.value);
+});
+
+folderName.addEventListener('change', (event) => {
+  maybeFillJobFromInput(event.target.value);
+});
+
+photoLicensePlate.addEventListener('blur', () => {
+  photoLicensePlate.value = normalizeLicensePlate(photoLicensePlate.value);
+  if (!licensePlate.value) {
+    licensePlate.value = photoLicensePlate.value;
+  }
+});
+
+invoiceFolderName.addEventListener('input', (event) => {
+  clearStaleLoadedJobDetails();
+  queueJobSearch(event.target.value);
+});
+
+invoiceFolderName.addEventListener('change', (event) => {
+  maybeFillJobFromInput(event.target.value);
+});
+
+licensePlate.addEventListener('blur', () => {
+  licensePlate.value = normalizeLicensePlate(licensePlate.value);
+  clearStaleLoadedJobDetails({ keepPlate: true });
+  if (!photoLicensePlate.value) {
+    photoLicensePlate.value = licensePlate.value;
   }
 });
 
@@ -211,7 +457,7 @@ function createItemRow(item = {}) {
   row.innerHTML = `
     <label class="line-field">
       <span>Service</span>
-      <input class="item-description" type="text" placeholder="Complete detail" value="${escapeHtml(item.description || '')}" required />
+      <input class="item-description" type="text" placeholder="(enter service offer)" value="${escapeHtml(formatServiceDescription(item.description || ''))}" required />
     </label>
     <label class="line-field">
       <span>Qty</span>
@@ -226,6 +472,9 @@ function createItemRow(item = {}) {
 
   row.querySelectorAll('input').forEach((input) => {
     input.addEventListener('input', updateInvoiceTotal);
+  });
+  row.querySelector('.item-description').addEventListener('blur', (event) => {
+    event.target.value = formatServiceDescription(event.target.value);
   });
 
   row.querySelector('.remove-item').addEventListener('click', () => {
@@ -246,7 +495,7 @@ function createItemRow(item = {}) {
 
 function collectItems() {
   return [...invoiceItems.querySelectorAll('.line-item')].map((row) => ({
-    description: row.querySelector('.item-description').value,
+    description: formatServiceDescription(row.querySelector('.item-description').value),
     quantity: row.querySelector('.item-quantity').value,
     rate: row.querySelector('.item-rate').value
   }));
@@ -271,6 +520,25 @@ function updateInvoiceTotal() {
 }
 
 addItemButton.addEventListener('click', () => createItemRow());
+clearInvoiceButton.addEventListener('click', () => {
+  cancelPendingSend('Invoice send canceled.');
+  clearInvoiceForm();
+});
+resetInvoiceButton.addEventListener('click', async () => {
+  const offset = Number.parseInt(invoiceOffset.value, 10);
+  const response = await fetch('/api/invoice-sequence', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      offset: Number.isFinite(offset) ? offset : 0
+    })
+  });
+  const data = await response.json();
+  invoiceNumber.value = data.nextInvoiceNumber;
+  invoiceOffset.value = data.offset;
+});
 themeToggle.addEventListener('click', () => {
   setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 });
@@ -281,28 +549,59 @@ customerName.addEventListener('blur', () => {
   customerName.value = formatPersonName(customerName.value);
 });
 
-invoiceForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
+function setInvoiceFormLocked(locked) {
+  invoiceForm.querySelectorAll('input, select, textarea, button').forEach((control) => {
+    control.disabled = locked;
+  });
+}
 
-  invoiceButton.disabled = true;
+function updatePendingCountdown(secondsLeft) {
+  const countdown = invoiceResult.querySelector('.countdown-ring');
+  if (!countdown) {
+    return;
+  }
+
+  countdown.textContent = secondsLeft;
+  countdown.style.setProperty('--progress', `${secondsLeft * 10}%`);
+}
+
+function renderPendingSend(secondsLeft) {
+  renderResult(invoiceResult, `
+    <div class="pending-send">
+      <div>
+        <strong>Invoice queued to send.</strong>
+        <p>You have 10 seconds to cancel before the invoice is created, saved, and emailed.</p>
+      </div>
+      <div class="countdown-ring" style="--progress: ${secondsLeft * 10}%">${secondsLeft}</div>
+      <button class="secondary danger-secondary" id="cancelSendButton" type="button">Cancel send</button>
+    </div>
+  `);
+
+  invoiceResult.querySelector('#cancelSendButton').addEventListener('click', () => {
+    cancelPendingSend('Invoice send canceled.');
+  });
+}
+
+function cancelPendingSend(message = 'Invoice send canceled.') {
+  window.clearTimeout(pendingSendTimeout);
+  window.clearInterval(pendingSendInterval);
+  pendingSendTimeout = undefined;
+  pendingSendInterval = undefined;
+  setInvoiceFormLocked(false);
+  invoiceButton.disabled = false;
+  invoiceButton.textContent = 'Create and email invoice';
+
+  if (message) {
+    renderResult(invoiceResult, escapeHtml(message));
+  }
+}
+
+async function sendInvoiceNow(body) {
+  window.clearInterval(pendingSendInterval);
+  pendingSendTimeout = undefined;
+  pendingSendInterval = undefined;
   invoiceButton.textContent = 'Sending invoice...';
   renderResult(invoiceResult, 'Creating the invoice PDF, saving it to Drive, and emailing the customer.');
-
-  const formData = new FormData(invoiceForm);
-  const body = {
-    folderName: formData.get('folderName'),
-    customerName: formatPersonName(formData.get('customerName')),
-    customerEmail: formData.get('customerEmail'),
-    copyEmail: formData.get('copyEmail'),
-    invoiceNumber: formData.get('invoiceNumber'),
-    invoiceDate: formData.get('invoiceDate'),
-    dueDate: formData.get('dueDate'),
-    discountType: formData.get('discountType'),
-    discount: formData.get('discount'),
-    taxRate: formData.get('taxRate'),
-    notes: formData.get('notes'),
-    items: collectItems()
-  };
 
   try {
     const response = await fetch('/api/invoice', {
@@ -321,6 +620,7 @@ invoiceForm.addEventListener('submit', async (event) => {
 
     renderResult(invoiceResult, `
       <strong>${escapeHtml(data.filename)} sent.</strong>
+      <p>Invoice: ${escapeHtml(data.invoiceNumber)}</p>
       <p>Total: ${money.format(data.total)}</p>
       <p>
         Drive copy:
@@ -329,12 +629,57 @@ invoiceForm.addEventListener('submit', async (event) => {
         </a>
       </p>
     `);
+    invoiceNumber.value = data.nextInvoiceNumber;
+    renderJobHistory(data.history || []);
   } catch (error) {
     renderResult(invoiceResult, escapeHtml(error.message), true);
   } finally {
+    setInvoiceFormLocked(false);
     invoiceButton.disabled = false;
     invoiceButton.textContent = 'Create and email invoice';
   }
+}
+
+function scheduleInvoiceSend(body) {
+  window.clearTimeout(pendingSendTimeout);
+  window.clearInterval(pendingSendInterval);
+  let secondsLeft = 10;
+
+  setInvoiceFormLocked(true);
+  invoiceButton.textContent = 'Queued...';
+  renderPendingSend(secondsLeft);
+
+  pendingSendInterval = window.setInterval(() => {
+    secondsLeft -= 1;
+    updatePendingCountdown(secondsLeft);
+  }, 1000);
+
+  pendingSendTimeout = window.setTimeout(() => {
+    sendInvoiceNow(body);
+  }, 10000);
+}
+
+invoiceForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const formData = new FormData(invoiceForm);
+  const body = {
+    folderName: formData.get('folderName'),
+    licensePlate: normalizeLicensePlate(formData.get('licensePlate')),
+    customerName: formatPersonName(formData.get('customerName')),
+    customerEmail: formData.get('customerEmail'),
+    copyEmail: formData.get('copyEmail'),
+    invoiceDate: formData.get('invoiceDate'),
+    dueDate: formData.get('dueDate'),
+    discountType: formData.get('discountType'),
+    discount: formData.get('discount'),
+    taxRate: formData.get('taxRate'),
+    notes: formData.get('notes'),
+    emailMessage: formData.get('emailMessage'),
+    items: collectItems()
+  };
+
+  scheduleInvoiceSend(body);
 });
 
 setTheme(localStorage.getItem('theme') || 'light');

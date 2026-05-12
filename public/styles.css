@@ -157,7 +157,8 @@ h1 {
 }
 
 .panel,
-.result {
+.result,
+.history-panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -254,6 +255,11 @@ select:focus,
 textarea:focus {
   outline: 3px solid var(--focus);
   border-color: var(--accent);
+}
+
+input[readonly] {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--field-bg) 76%, var(--border));
 }
 
 .dropzone {
@@ -354,6 +360,18 @@ textarea:focus {
   font-weight: 850;
 }
 
+.form-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.danger-secondary {
+  color: #ffffff;
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
 .primary:disabled,
 .secondary:disabled {
   cursor: wait;
@@ -435,9 +453,72 @@ textarea:focus {
   padding: 18px;
 }
 
+.history-panel {
+  margin-top: 16px;
+  padding: 18px;
+}
+
+.history-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  letter-spacing: 0;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.history-item div {
+  display: grid;
+  gap: 4px;
+}
+
+.history-item span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
 .result a {
   color: var(--accent);
   font-weight: 800;
+}
+
+.history-item a {
+  color: var(--accent);
+  font-weight: 850;
+}
+
+.pending-send {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.pending-send p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.countdown-ring {
+  --progress: 100%;
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  color: var(--text);
+  background:
+    radial-gradient(circle at center, var(--panel) 56%, transparent 58%),
+    conic-gradient(var(--accent-strong) var(--progress), var(--border) 0);
+  font-size: 1.15rem;
+  font-weight: 950;
 }
 
 .error {
@@ -510,6 +591,10 @@ textarea:focus {
     padding: 14px;
   }
 
+  .history-panel {
+    padding: 14px;
+  }
+
   input[type="text"],
   input[type="email"],
   input[type="date"],
@@ -542,6 +627,10 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .form-actions {
+    grid-template-columns: 1fr;
+  }
+
   .line-item {
     grid-template-columns: 1fr 0.72fr 0.9fr 44px;
     gap: 8px;
@@ -571,6 +660,24 @@ textarea:focus {
 
   .invoice-total {
     min-height: 54px;
+  }
+
+  .history-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .pending-send {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .pending-send > div:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .pending-send .secondary {
+    min-height: 48px;
   }
 }
 

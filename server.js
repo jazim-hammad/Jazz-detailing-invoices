@@ -18,10 +18,18 @@ const app = express();
 const port = process.env.PORT || 3000;
 const uploadDir = path.join(__dirname, 'uploads');
 const invoiceDir = path.join(__dirname, 'invoices');
+const dataDir = path.join(__dirname, 'data');
+const storePath = path.join(dataDir, 'app-data.json');
 const invoiceLogoPath = path.join(__dirname, 'public', 'assets', 'logo-light.png');
+const invoicePrefix = 'jd';
+const invoiceBaseline = 100;
+const defaultEmailMessage = `Thank you for choosing Jazz's Detailing. Attached is your invoice for today's service.
+
+We appreciate your business and hope you enjoy your cleaner, shinier, protected vehicle.`;
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(invoiceDir, { recursive: true });
+fs.mkdirSync(dataDir, { recursive: true });
 
 const upload = multer({
   dest: uploadDir,
@@ -104,6 +112,21 @@ function normalizeFolderName(name) {
   return name.trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').replace(/\s+/g, ' ');
 }
 
+function normalizeVehicleName(name) {
+  return normalizeFolderName(name || '');
+}
+
+function normalizeLicensePlate(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function buildJobFolderName(vehicleName, licensePlate = '') {
+  const vehicle = normalizeVehicleName(vehicleName);
+  const plate = normalizeLicensePlate(licensePlate);
+
+  return normalizeFolderName([vehicle, plate].filter(Boolean).join(' - '));
+}
+
 function sanitizeFileName(name) {
   return normalizeFolderName(name).replace(/[. ]+$/g, '') || 'Detail Job';
 }
@@ -145,13 +168,21 @@ function sanitizeHeader(value) {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
 }
 
-function formatPersonName(value) {
+function formatTitleCase(value) {
   return String(value || '')
     .trim()
     .replace(/\s+/g, ' ')
     .toLowerCase()
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
-    .replace(/([-'’])[a-z]/g, (match) => match.toUpperCase());
+    .replace(/([\-'])[a-z]/g, (match) => match.toUpperCase());
+}
+
+function formatPersonName(value) {
+  return formatTitleCase(value);
+}
+
+function formatServiceDescription(value) {
+  return formatTitleCase(value);
 }
 
 function isEmail(value) {
@@ -189,6 +220,118 @@ function formatDate(value) {
 
 function todayInputValue() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function emptyStore() {
+  return {
+    invoiceOffset: 0,
+    jobs: [],
+    invoices: []
+  };
+}
+
+function readStore() {
+  try {
+    if (!fs.existsSync(storePath)) {
+      return emptyStore();
+    }
+
+    return {
+      ...emptyStore(),
+      ...JSON.parse(fs.readFileSync(storePath, 'utf8'))
+    };
+  } catch {
+    return emptyStore();
+  }
+}
+
+function writeStore(store) {
+  fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+}
+
+function invoiceNumberForOffset(offset) {
+  return `${invoicePrefix}-${invoiceBaseline + Math.max(Number.parseInt(offset, 10) || 0, 0)}`;
+}
+
+function currentInvoiceNumber(store = readStore()) {
+  return invoiceNumberForOffset(store.invoiceOffset);
+}
+
+function resetInvoiceOffset(value) {
+  const store = readStore();
+  store.invoiceOffset = Math.max(Number.parseInt(value, 10) || 0, 0);
+  writeStore(store);
+  return store;
+}
+
+function nextInvoiceNumber() {
+  const store = readStore();
+  return currentInvoiceNumber(store);
+}
+
+function advanceInvoiceNumber() {
+  const store = readStore();
+  store.invoiceOffset = Math.max(Number.parseInt(store.invoiceOffset, 10) || 0, 0) + 1;
+  writeStore(store);
+  return currentInvoiceNumber(store);
+}
+
+function jobKey(vehicleName, licensePlate = '') {
+  return `${normalizeVehicleName(vehicleName).toLowerCase()}|${normalizeLicensePlate(licensePlate).toLowerCase()}`;
+}
+
+function upsertJob(jobUpdate) {
+  const store = readStore();
+  const key = jobKey(jobUpdate.vehicleName, jobUpdate.licensePlate);
+  const now = new Date().toISOString();
+  const existingIndex = store.jobs.findIndex((job) => job.key === key);
+  const existing = existingIndex >= 0 ? store.jobs[existingIndex] : {};
+  const nextJob = {
+    ...existing,
+    ...jobUpdate,
+    key,
+    updatedAt: now,
+    createdAt: existing.createdAt || now
+  };
+
+  if (existingIndex >= 0) {
+    store.jobs[existingIndex] = nextJob;
+  } else {
+    store.jobs.unshift(nextJob);
+  }
+
+  writeStore(store);
+  return nextJob;
+}
+
+function rememberInvoice(invoice, folder, invoiceFile) {
+  const store = readStore();
+  const key = jobKey(invoice.vehicleName, invoice.licensePlate);
+  const record = {
+    id: crypto.randomUUID(),
+    jobKey: key,
+    invoiceNumber: invoice.invoiceNumber,
+    vehicleName: invoice.vehicleName,
+    licensePlate: invoice.licensePlate,
+    folderName: invoice.folderName,
+    customerName: invoice.customerName,
+    customerEmail: invoice.customerEmail,
+    total: invoice.total,
+    invoiceDate: invoice.invoiceDate,
+    sentAt: new Date().toISOString(),
+    fileName: invoiceFile.name,
+    fileLink: invoiceFile.webViewLink,
+    folderLink: folder.webViewLink
+  };
+
+  store.invoices.unshift(record);
+  writeStore(store);
+  return record;
+}
+
+function jobInvoices(key) {
+  const store = readStore();
+  return store.invoices.filter((invoice) => invoice.jobKey === key).slice(0, 10);
 }
 
 async function findOrCreateFolder(drive, folderName) {
@@ -242,6 +385,39 @@ async function findOrCreateFolder(drive, folderName) {
   return created.data;
 }
 
+async function searchDriveFolders(drive, searchTerm) {
+  if (!drive || !searchTerm) {
+    return [];
+  }
+
+  const parentFolderId = normalizeDriveFolderId(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID);
+  const queryParts = [
+    `name contains '${escapeDriveQuery(searchTerm)}'`,
+    "mimeType = 'application/vnd.google-apps.folder'",
+    'trashed = false'
+  ];
+
+  if (parentFolderId) {
+    queryParts.push(`'${escapeDriveQuery(parentFolderId)}' in parents`);
+  }
+
+  const listOptions = {
+    q: queryParts.join(' and '),
+    fields: 'files(id, name, webViewLink)',
+    pageSize: 10,
+    spaces: 'drive',
+    supportsAllDrives: true
+  };
+
+  if (parentFolderId) {
+    listOptions.corpora = 'allDrives';
+    listOptions.includeItemsFromAllDrives = true;
+  }
+
+  const result = await drive.files.list(listOptions);
+  return result.data.files || [];
+}
+
 async function uploadPhoto(drive, file, folderId) {
   return uploadDriveFile(drive, {
     filePath: file.path,
@@ -269,7 +445,9 @@ async function uploadDriveFile(drive, { filePath, filename, mimeType, folderId }
 }
 
 function buildInvoiceData(body) {
-  const folderName = normalizeFolderName(body.folderName || '');
+  const vehicleName = normalizeVehicleName(body.folderName || body.vehicleName || '');
+  const licensePlate = normalizeLicensePlate(body.licensePlate);
+  const folderName = buildJobFolderName(vehicleName, licensePlate);
   const customerName = formatPersonName(body.customerName);
   const customerEmail = String(body.customerEmail || '').trim();
   const copyEmail = String(
@@ -277,13 +455,12 @@ function buildInvoiceData(body) {
   ).trim();
   const businessEmail = String(process.env.BUSINESS_EMAIL || copyEmail).trim();
   const invoiceDate = body.invoiceDate || todayInputValue();
-  const invoiceNumber = String(body.invoiceNumber || '').trim()
-    || `INV-${invoiceDate.replaceAll('-', '')}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+  const invoiceNumber = currentInvoiceNumber();
   const rawItems = Array.isArray(body.items) ? body.items : [];
 
   const items = rawItems
     .map((item) => {
-      const description = String(item.description || '').trim();
+      const description = formatServiceDescription(item.description);
       const quantity = Math.max(parseMoney(item.quantity), 0);
       const rate = Math.max(parseMoney(item.rate), 0);
 
@@ -296,8 +473,12 @@ function buildInvoiceData(body) {
     })
     .filter((item) => item.description || item.amount > 0);
 
-  if (!folderName) {
-    throw new Error('Enter the job/folder name for this invoice.');
+  if (!vehicleName) {
+    throw new Error('Enter the vehicle for this invoice.');
+  }
+
+  if (!licensePlate) {
+    throw new Error('Enter the license plate for this invoice.');
   }
 
   if (!customerName) {
@@ -341,9 +522,12 @@ function buildInvoiceData(body) {
     businessPhone: process.env.BUSINESS_PHONE || '',
     businessAddress: process.env.BUSINESS_ADDRESS || '',
     invoiceNumber,
+    vehicleName,
+    licensePlate,
     invoiceDate,
     dueDate: body.dueDate || '',
     notes: String(body.notes || '').trim(),
+    emailMessage: String(body.emailMessage || defaultEmailMessage).trim(),
     items,
     subtotal,
     discountType,
@@ -395,14 +579,16 @@ async function createInvoicePdf(invoice, filePath) {
 
     doc.font('Helvetica-Bold').text('Job', 300, 150);
     doc.font('Helvetica').text(invoice.folderName, 390, 150, { width: 170 });
-    doc.font('Helvetica-Bold').text('Invoice #', 300, 184);
-    doc.font('Helvetica').text(invoice.invoiceNumber, 390, 184);
-    doc.font('Helvetica-Bold').text('Date', 300, 202);
-    doc.font('Helvetica').text(formatDate(invoice.invoiceDate), 390, 202);
+    doc.font('Helvetica-Bold').text('Plate', 300, 184);
+    doc.font('Helvetica').text(invoice.licensePlate, 390, 184);
+    doc.font('Helvetica-Bold').text('Invoice #', 300, 202);
+    doc.font('Helvetica').text(invoice.invoiceNumber, 390, 202);
+    doc.font('Helvetica-Bold').text('Date', 300, 220);
+    doc.font('Helvetica').text(formatDate(invoice.invoiceDate), 390, 220);
 
     if (invoice.dueDate) {
-      doc.font('Helvetica-Bold').text('Due', 300, 220);
-      doc.font('Helvetica').text(formatDate(invoice.dueDate), 390, 220);
+      doc.font('Helvetica-Bold').text('Due', 300, 238);
+      doc.font('Helvetica').text(formatDate(invoice.dueDate), 390, 238);
     }
 
     let y = 275;
@@ -499,7 +685,11 @@ async function sendInvoiceEmail(gmail, invoice, filePath, filename, driveLink) {
   const body = [
     `Hi ${invoice.customerName},`,
     '',
-    `Attached is the invoice for ${invoice.folderName}.`,
+    invoice.emailMessage || defaultEmailMessage,
+    '',
+    `Vehicle: ${invoice.vehicleName}`,
+    `License plate: ${invoice.licensePlate}`,
+    `Invoice: ${invoice.invoiceNumber}`,
     `Total: ${formatMoney(invoice.total)}`,
     invoice.dueDate ? `Due: ${formatDate(invoice.dueDate)}` : '',
     '',
@@ -512,7 +702,7 @@ async function sendInvoiceEmail(gmail, invoice, filePath, filename, driveLink) {
     `From: ${formatEmailAddress(invoice.businessEmail, invoice.businessName)}`,
     `To: ${formatEmailAddress(invoice.customerEmail, invoice.customerName)}`,
     `Bcc: ${formatEmailAddress(invoice.copyEmail)}`,
-    `Reply-To: ${formatEmailAddress(invoice.copyEmail)}`,
+    `Reply-To: ${formatEmailAddress(invoice.businessEmail, invoice.businessName)}`,
     `Subject: ${subject}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
@@ -556,9 +746,76 @@ app.get('/api/status', (req, res) => {
     invoiceDefaults: {
       businessEmail: process.env.BUSINESS_EMAIL || '',
       copyEmail: process.env.INVOICE_COPY_EMAIL || process.env.BUSINESS_EMAIL || '',
-      today: todayInputValue()
+      today: todayInputValue(),
+      nextInvoiceNumber: currentInvoiceNumber(),
+      emailMessage: defaultEmailMessage
     }
   });
+});
+
+app.get('/api/invoice-sequence', (_req, res) => {
+  const store = readStore();
+  res.json({
+    offset: store.invoiceOffset,
+    nextInvoiceNumber: currentInvoiceNumber(store)
+  });
+});
+
+app.post('/api/invoice-sequence', (req, res) => {
+  const store = resetInvoiceOffset(req.body.offset);
+  res.json({
+    offset: store.invoiceOffset,
+    nextInvoiceNumber: currentInvoiceNumber(store)
+  });
+});
+
+app.get('/api/jobs', async (req, res, next) => {
+  try {
+    const searchTerm = String(req.query.q || '').trim();
+    const store = readStore();
+    const localJobs = store.jobs
+      .filter((job) => {
+        if (!searchTerm) {
+          return true;
+        }
+
+        const haystack = [
+          job.vehicleName,
+          job.licensePlate,
+          job.folderName,
+          job.customerName,
+          job.customerEmail
+        ].join(' ').toLowerCase();
+        return haystack.includes(searchTerm.toLowerCase());
+      })
+      .slice(0, 10)
+      .map((job) => ({
+        ...job,
+        source: 'local',
+        invoices: jobInvoices(job.key)
+      }));
+
+    const drive = getDriveClient(req);
+    const driveFolders = await searchDriveFolders(drive, searchTerm);
+    const knownFolderNames = new Set(localJobs.map((job) => job.folderName.toLowerCase()));
+    const driveJobs = driveFolders
+      .filter((folder) => !knownFolderNames.has(folder.name.toLowerCase()))
+      .map((folder) => ({
+        id: folder.id,
+        source: 'drive',
+        vehicleName: folder.name,
+        licensePlate: '',
+        folderName: folder.name,
+        folderLink: folder.webViewLink,
+        invoices: []
+      }));
+
+    res.json({
+      jobs: [...localJobs, ...driveJobs].slice(0, 12)
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/auth/google', (req, res, next) => {
@@ -605,10 +862,19 @@ app.post('/api/upload', upload.array('photos', 100), async (req, res, next) => {
       return;
     }
 
-    const folderName = normalizeFolderName(req.body.folderName || '');
-    if (!folderName) {
+    const vehicleName = normalizeVehicleName(req.body.folderName || req.body.vehicleName || '');
+    const licensePlate = normalizeLicensePlate(req.body.licensePlate);
+    const folderName = buildJobFolderName(vehicleName, licensePlate);
+
+    if (!vehicleName) {
       removeTempFiles(req.files);
-      res.status(400).json({ error: 'Enter a folder name for this detail job.' });
+      res.status(400).json({ error: 'Enter a vehicle for this detail job.' });
+      return;
+    }
+
+    if (!licensePlate) {
+      removeTempFiles(req.files);
+      res.status(400).json({ error: 'Enter a license plate for this detail job.' });
       return;
     }
 
@@ -618,6 +884,14 @@ app.post('/api/upload', upload.array('photos', 100), async (req, res, next) => {
     }
 
     const folder = await findOrCreateFolder(drive, folderName);
+    upsertJob({
+      vehicleName,
+      licensePlate,
+      folderName,
+      folderId: folder.id,
+      folderLink: folder.webViewLink
+    });
+
     const uploaded = [];
 
     for (const file of req.files) {
@@ -669,14 +943,41 @@ app.post('/api/invoice', async (req, res, next) => {
       filename,
       invoiceFile.webViewLink
     );
+    const job = upsertJob({
+      vehicleName: invoice.vehicleName,
+      licensePlate: invoice.licensePlate,
+      folderName: invoice.folderName,
+      folderId: folder.id,
+      folderLink: folder.webViewLink,
+      customerName: invoice.customerName,
+      customerEmail: invoice.customerEmail,
+      copyEmail: invoice.copyEmail,
+      items: invoice.items.map((item) => ({
+        description: item.description,
+        quantity: item.quantity,
+        rate: item.rate
+      })),
+      discountType: invoice.discountType,
+      discount: invoice.discountValue,
+      taxRate: invoice.taxRate,
+      notes: invoice.notes,
+      emailMessage: invoice.emailMessage
+    });
+    const invoiceRecord = rememberInvoice(invoice, folder, invoiceFile);
+    const nextNumber = advanceInvoiceNumber();
 
     res.json({
       folder,
+      job,
+      history: jobInvoices(job.key),
+      invoiceRecord,
       invoiceFile,
       email: {
         id: sentMessage.id
       },
       filename,
+      invoiceNumber: invoice.invoiceNumber,
+      nextInvoiceNumber: nextNumber,
       total: invoice.total
     });
   } catch (error) {
