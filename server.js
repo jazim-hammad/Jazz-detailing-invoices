@@ -2,7 +2,9 @@ import 'dotenv/config';
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import express from 'express';
@@ -16,15 +18,26 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = process.env.PORT || 3000;
-const uploadDir = path.join(__dirname, 'uploads');
-const invoiceDir = path.join(__dirname, 'invoices');
+const isHostedOnVercel = Boolean(process.env.VERCEL);
+const writableRuntimeDir = isHostedOnVercel
+  ? path.join(os.tmpdir(), 'jazz-detailing-invoices')
+  : __dirname;
+const uploadDir = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.join(writableRuntimeDir, 'uploads');
+const invoiceDir = process.env.INVOICE_DIR
+  ? path.resolve(process.env.INVOICE_DIR)
+  : path.join(writableRuntimeDir, 'invoices');
 const dataDir = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
-  : path.join(__dirname, 'data');
+  : path.join(writableRuntimeDir, 'data');
 const storePath = path.join(dataDir, 'app-data.json');
 const invoiceLogoPath = path.join(__dirname, 'public', 'assets', 'logo-light.png');
 const invoicePrefix = 'jd';
 const invoiceBaseline = 100;
+const tokenCookieName = 'jd_google_tokens';
+const tokenCookieMaxAgeSeconds = 60 * 60 * 24 * 90;
+const driveStoreFileName = process.env.GOOGLE_DRIVE_STORE_FILE_NAME || 'Jazz Detailing App Data.json';
 const defaultEmailMessage = `Thank you for choosing Jazz's Detailing. Attached is your invoice for today's service.
 
 We appreciate your business and hope you enjoy your cleaner, shinier, protected vehicle.`;
@@ -64,6 +77,109 @@ app.use(
   })
 );
 
+function cookieSecretKey() {
+  return crypto
+    .createHash('sha256')
+    .update(process.env.SESSION_SECRET || 'local-development-session-secret')
+    .digest();
+}
+
+function encryptJson(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', cookieSecretKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(value), 'utf8'),
+    cipher.final()
+  ]);
+  const tag = cipher.getAuthTag();
+
+  return [
+    iv.toString('base64url'),
+    tag.toString('base64url'),
+    encrypted.toString('base64url')
+  ].join('.');
+}
+
+function decryptJson(value) {
+  try {
+    const [ivValue, tagValue, encryptedValue] = String(value || '').split('.');
+    if (!ivValue || !tagValue || !encryptedValue) {
+      return null;
+    }
+
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      cookieSecretKey(),
+      Buffer.from(ivValue, 'base64url')
+    );
+    decipher.setAuthTag(Buffer.from(tagValue, 'base64url'));
+
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(encryptedValue, 'base64url')),
+      decipher.final()
+    ]);
+
+    return JSON.parse(decrypted.toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(req) {
+  return String(req.headers.cookie || '')
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .filter(Boolean)
+    .reduce((cookies, cookie) => {
+      const separatorIndex = cookie.indexOf('=');
+      if (separatorIndex === -1) {
+        return cookies;
+      }
+
+      const name = decodeURIComponent(cookie.slice(0, separatorIndex));
+      const value = decodeURIComponent(cookie.slice(separatorIndex + 1));
+      cookies[name] = value;
+      return cookies;
+    }, {});
+}
+
+function appendCookie(res, name, value, options = {}) {
+  const parts = [
+    `${encodeURIComponent(name)}=${encodeURIComponent(value)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax'
+  ];
+
+  if (options.maxAge !== undefined) {
+    parts.push(`Max-Age=${options.maxAge}`);
+  }
+
+  if (isHostedOnVercel || process.env.NODE_ENV === 'production') {
+    parts.push('Secure');
+  }
+
+  if (!res.headersSent) {
+    res.append('Set-Cookie', parts.join('; '));
+  }
+}
+
+function readGoogleTokenCookie(req) {
+  return decryptJson(parseCookies(req)[tokenCookieName]);
+}
+
+function setGoogleTokenCookie(res, tokens) {
+  appendCookie(res, tokenCookieName, encryptJson(tokens), {
+    maxAge: tokenCookieMaxAgeSeconds
+  });
+}
+
+function clearGoogleTokenCookie(res) {
+  appendCookie(res, tokenCookieName, '', {
+    maxAge: 0
+  });
+}
+
 function createOAuthClient() {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
 
@@ -78,8 +194,32 @@ function createOAuthClient() {
   );
 }
 
-function getGoogleAuth(req) {
-  const tokens = req.session.tokens || getStoredGoogleTokens();
+function getEnvironmentGoogleTokens() {
+  if (!process.env.GOOGLE_REFRESH_TOKEN) {
+    return null;
+  }
+
+  return {
+    refresh_token: process.env.GOOGLE_REFRESH_TOKEN
+  };
+}
+
+function getRequestGoogleTokens(req) {
+  return req.session.tokens
+    || readGoogleTokenCookie(req)
+    || getStoredGoogleTokens()
+    || getEnvironmentGoogleTokens();
+}
+
+function rememberRequestGoogleTokens(req, res, tokens) {
+  const mergedTokens = saveGoogleTokens(tokens);
+  req.session.tokens = mergedTokens;
+  setGoogleTokenCookie(res, mergedTokens);
+  return mergedTokens;
+}
+
+function getGoogleAuth(req, res) {
+  const tokens = getRequestGoogleTokens(req);
   if (!tokens) {
     return null;
   }
@@ -87,15 +227,21 @@ function getGoogleAuth(req) {
   const auth = createOAuthClient();
   auth.setCredentials(tokens);
   auth.on('tokens', (newTokens) => {
-    const mergedTokens = saveGoogleTokens(newTokens);
+    const mergedTokens = saveGoogleTokens({
+      ...tokens,
+      ...newTokens
+    });
     req.session.tokens = mergedTokens;
+    if (res) {
+      setGoogleTokenCookie(res, mergedTokens);
+    }
   });
   req.session.tokens = tokens;
   return auth;
 }
 
-function getDriveClient(req) {
-  const auth = getGoogleAuth(req);
+function getDriveClient(req, res) {
+  const auth = getGoogleAuth(req, res);
   if (!auth) {
     return null;
   }
@@ -103,8 +249,8 @@ function getDriveClient(req) {
   return google.drive({ version: 'v3', auth });
 }
 
-function getGmailClient(req) {
-  const auth = getGoogleAuth(req);
+function getGmailClient(req, res) {
+  const auth = getGoogleAuth(req, res);
   if (!auth) {
     return null;
   }
@@ -239,23 +385,112 @@ function emptyStore() {
   };
 }
 
+function normalizeStore(store = {}) {
+  const nextStore = {
+    ...emptyStore(),
+    ...(store && typeof store === 'object' ? store : {})
+  };
+
+  nextStore.invoiceOffset = Math.max(Number.parseInt(nextStore.invoiceOffset, 10) || 0, 0);
+  nextStore.jobs = Array.isArray(nextStore.jobs) ? nextStore.jobs : [];
+  nextStore.invoices = Array.isArray(nextStore.invoices) ? nextStore.invoices : [];
+
+  return nextStore;
+}
+
+function storeHasBusinessData(store) {
+  const normalized = normalizeStore(store);
+  return normalized.invoiceOffset > 0
+    || normalized.jobs.length > 0
+    || normalized.invoices.length > 0;
+}
+
+function storeForDrive(store) {
+  const normalized = normalizeStore(store);
+
+  return {
+    invoiceOffset: normalized.invoiceOffset,
+    jobs: normalized.jobs,
+    invoices: normalized.invoices,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function storeDataSignature(store) {
+  return JSON.stringify(storeForDrive(store));
+}
+
+function newestRecord(existing, incoming) {
+  if (!existing) {
+    return incoming;
+  }
+
+  const existingTime = new Date(existing.updatedAt || existing.sentAt || existing.createdAt || 0).getTime();
+  const incomingTime = new Date(incoming.updatedAt || incoming.sentAt || incoming.createdAt || 0).getTime();
+
+  return incomingTime >= existingTime ? incoming : existing;
+}
+
+function mergeStores(driveStore, localStore) {
+  const drive = normalizeStore(driveStore);
+  const local = normalizeStore(localStore);
+  const merged = {
+    ...emptyStore(),
+    invoiceOffset: Math.max(drive.invoiceOffset, local.invoiceOffset),
+    googleTokens: local.googleTokens || drive.googleTokens || null,
+    jobs: [],
+    invoices: []
+  };
+  const jobsByKey = new Map();
+  const invoicesByKey = new Map();
+
+  for (const job of [...drive.jobs, ...local.jobs]) {
+    const key = job.key || jobKey(job.vehicleName, job.licensePlate);
+    jobsByKey.set(key, newestRecord(jobsByKey.get(key), {
+      ...job,
+      key
+    }));
+  }
+
+  for (const invoice of [...drive.invoices, ...local.invoices]) {
+    const key = invoice.id
+      || [invoice.jobKey, invoice.invoiceNumber, invoice.fileLink, invoice.sentAt].filter(Boolean).join('|');
+    invoicesByKey.set(key, newestRecord(invoicesByKey.get(key), invoice));
+  }
+
+  merged.jobs = [...jobsByKey.values()].sort((a, b) => {
+    return new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0);
+  });
+  merged.invoices = [...invoicesByKey.values()].sort((a, b) => {
+    return new Date(b.sentAt || b.invoiceDate || 0) - new Date(a.sentAt || a.invoiceDate || 0);
+  });
+
+  return merged;
+}
+
 function readStore() {
   try {
     if (!fs.existsSync(storePath)) {
       return emptyStore();
     }
 
-    return {
-      ...emptyStore(),
-      ...JSON.parse(fs.readFileSync(storePath, 'utf8'))
-    };
+    return normalizeStore(JSON.parse(fs.readFileSync(storePath, 'utf8')));
   } catch {
     return emptyStore();
   }
 }
 
 function writeStore(store) {
-  fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+  const normalized = normalizeStore(store);
+
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(storePath, JSON.stringify(normalized, null, 2));
+  } catch (error) {
+    console.warn('Could not write local app data cache:', error.message);
+  }
+
+  return normalized;
 }
 
 function getStoredGoogleTokens() {
@@ -278,6 +513,161 @@ function clearGoogleTokens() {
   writeStore(store);
 }
 
+async function streamToString(stream) {
+  const chunks = [];
+
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+  }
+
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function findDriveStoreFile(drive) {
+  if (!drive) {
+    return null;
+  }
+
+  const parentFolderId = normalizeDriveFolderId(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID);
+  const queryParts = [
+    `name = '${escapeDriveQuery(driveStoreFileName)}'`,
+    'trashed = false'
+  ];
+
+  if (parentFolderId) {
+    queryParts.push(`'${escapeDriveQuery(parentFolderId)}' in parents`);
+  }
+
+  const listOptions = {
+    q: queryParts.join(' and '),
+    fields: 'files(id, name, modifiedTime)',
+    pageSize: 1,
+    spaces: 'drive',
+    supportsAllDrives: true
+  };
+
+  if (parentFolderId) {
+    listOptions.corpora = 'allDrives';
+    listOptions.includeItemsFromAllDrives = true;
+  }
+
+  const result = await drive.files.list(listOptions);
+  return result.data.files?.[0] || null;
+}
+
+async function readDriveStore(drive) {
+  const file = await findDriveStoreFile(drive);
+  if (!file) {
+    return null;
+  }
+
+  const result = await drive.files.get(
+    {
+      fileId: file.id,
+      alt: 'media',
+      supportsAllDrives: true
+    },
+    {
+      responseType: 'stream'
+    }
+  );
+  const text = await streamToString(result.data);
+
+  return normalizeStore(JSON.parse(text));
+}
+
+async function writeDriveStore(drive, store) {
+  if (!drive) {
+    return null;
+  }
+
+  const parentFolderId = normalizeDriveFolderId(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID);
+  const file = await findDriveStoreFile(drive);
+  const json = JSON.stringify(storeForDrive(store), null, 2);
+  const media = {
+    mimeType: 'application/json',
+    body: Readable.from([json])
+  };
+
+  if (file) {
+    const updated = await drive.files.update({
+      fileId: file.id,
+      media,
+      supportsAllDrives: true,
+      fields: 'id, name, webViewLink'
+    });
+
+    return updated.data;
+  }
+
+  const requestBody = {
+    name: driveStoreFileName,
+    mimeType: 'application/json',
+    appProperties: {
+      jazzDetailingAppData: 'true'
+    }
+  };
+
+  if (parentFolderId) {
+    requestBody.parents = [parentFolderId];
+  }
+
+  const created = await drive.files.create({
+    requestBody,
+    media,
+    supportsAllDrives: true,
+    fields: 'id, name, webViewLink'
+  });
+
+  return created.data;
+}
+
+async function readAppStore(drive = null) {
+  const localStore = readStore();
+
+  if (!drive) {
+    return localStore;
+  }
+
+  try {
+    const driveStore = await readDriveStore(drive);
+
+    if (driveStore) {
+      const mergedStore = mergeStores(driveStore, localStore);
+
+      if (storeDataSignature(mergedStore) !== storeDataSignature(driveStore)) {
+        await writeDriveStore(drive, mergedStore);
+      }
+
+      return writeStore(mergedStore);
+    }
+
+    if (storeHasBusinessData(localStore)) {
+      await writeDriveStore(drive, localStore);
+    } else {
+      await writeDriveStore(drive, emptyStore());
+    }
+  } catch (error) {
+    console.warn('Could not read Google Drive app data:', error.message);
+  }
+
+  return localStore;
+}
+
+async function writeAppStore(drive, store) {
+  const localStore = readStore();
+  const nextStore = writeStore({
+    ...store,
+    googleTokens: localStore.googleTokens
+  });
+
+  if (drive) {
+    await writeDriveStore(drive, nextStore);
+  }
+
+  return nextStore;
+}
+
 function invoiceNumberForOffset(offset) {
   return `${invoicePrefix}-${invoiceBaseline + Math.max(Number.parseInt(offset, 10) || 0, 0)}`;
 }
@@ -286,9 +676,14 @@ function currentInvoiceNumber(store = readStore()) {
   return invoiceNumberForOffset(store.invoiceOffset);
 }
 
+function resetInvoiceOffsetInStore(store, value) {
+  store.invoiceOffset = Math.max(Number.parseInt(value, 10) || 0, 0);
+  return store;
+}
+
 function resetInvoiceOffset(value) {
   const store = readStore();
-  store.invoiceOffset = Math.max(Number.parseInt(value, 10) || 0, 0);
+  resetInvoiceOffsetInStore(store, value);
   writeStore(store);
   return store;
 }
@@ -298,9 +693,14 @@ function nextInvoiceNumber() {
   return currentInvoiceNumber(store);
 }
 
+function advanceInvoiceNumberInStore(store) {
+  store.invoiceOffset = Math.max(Number.parseInt(store.invoiceOffset, 10) || 0, 0) + 1;
+  return currentInvoiceNumber(store);
+}
+
 function advanceInvoiceNumber() {
   const store = readStore();
-  store.invoiceOffset = Math.max(Number.parseInt(store.invoiceOffset, 10) || 0, 0) + 1;
+  advanceInvoiceNumberInStore(store);
   writeStore(store);
   return currentInvoiceNumber(store);
 }
@@ -309,8 +709,7 @@ function jobKey(vehicleName, licensePlate = '') {
   return `${normalizeVehicleName(vehicleName).toLowerCase()}|${normalizeLicensePlate(licensePlate).toLowerCase()}`;
 }
 
-function upsertJob(jobUpdate) {
-  const store = readStore();
+function upsertJobInStore(store, jobUpdate) {
   const key = jobKey(jobUpdate.vehicleName, jobUpdate.licensePlate);
   const now = new Date().toISOString();
   const existingIndex = store.jobs.findIndex((job) => job.key === key);
@@ -329,12 +728,17 @@ function upsertJob(jobUpdate) {
     store.jobs.unshift(nextJob);
   }
 
-  writeStore(store);
   return nextJob;
 }
 
-function rememberInvoice(invoice, folder, invoiceFile) {
+function upsertJob(jobUpdate) {
   const store = readStore();
+  const job = upsertJobInStore(store, jobUpdate);
+  writeStore(store);
+  return job;
+}
+
+function rememberInvoiceInStore(store, invoice, folder, invoiceFile) {
   const key = jobKey(invoice.vehicleName, invoice.licensePlate);
   const record = {
     id: crypto.randomUUID(),
@@ -354,13 +758,22 @@ function rememberInvoice(invoice, folder, invoiceFile) {
   };
 
   store.invoices.unshift(record);
-  writeStore(store);
   return record;
 }
 
-function jobInvoices(key) {
+function rememberInvoice(invoice, folder, invoiceFile) {
   const store = readStore();
+  const invoiceRecord = rememberInvoiceInStore(store, invoice, folder, invoiceFile);
+  writeStore(store);
+  return invoiceRecord;
+}
+
+function jobInvoicesFromStore(store, key) {
   return store.invoices.filter((invoice) => invoice.jobKey === key).slice(0, 10);
+}
+
+function jobInvoices(key) {
+  return jobInvoicesFromStore(readStore(), key);
 }
 
 async function findOrCreateFolder(drive, folderName) {
@@ -473,7 +886,7 @@ async function uploadDriveFile(drive, { filePath, filename, mimeType, folderId }
   return result.data;
 }
 
-function buildInvoiceData(body) {
+function buildInvoiceData(body, store = readStore()) {
   const vehicleName = normalizeVehicleName(body.folderName || body.vehicleName || '');
   const licensePlate = normalizeLicensePlate(body.licensePlate);
   const folderName = buildJobFolderName(vehicleName, licensePlate);
@@ -484,7 +897,7 @@ function buildInvoiceData(body) {
   ).trim();
   const businessEmail = String(process.env.BUSINESS_EMAIL || copyEmail).trim();
   const invoiceDate = body.invoiceDate || todayInputValue();
-  const invoiceNumber = currentInvoiceNumber();
+  const invoiceNumber = currentInvoiceNumber(store);
   const rawItems = Array.isArray(body.items) ? body.items : [];
 
   const items = rawItems
@@ -768,46 +1181,64 @@ function removeTempFiles(files = []) {
   }
 }
 
-app.get('/api/status', (req, res) => {
-  const hasTokens = Boolean(req.session.tokens || getStoredGoogleTokens());
+app.get('/api/status', async (req, res, next) => {
+  try {
+    const drive = getDriveClient(req, res);
+    const store = await readAppStore(drive);
 
-  res.json({
-    signedIn: hasTokens,
-    parentFolderConfigured: Boolean(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID?.trim()),
-    invoiceDefaults: {
-      businessEmail: process.env.BUSINESS_EMAIL || '',
-      copyEmail: process.env.INVOICE_COPY_EMAIL || process.env.BUSINESS_EMAIL || '',
-      today: todayInputValue(),
-      nextInvoiceNumber: currentInvoiceNumber(),
-      emailMessage: defaultEmailMessage
-    }
-  });
+    res.json({
+      signedIn: Boolean(drive),
+      parentFolderConfigured: Boolean(process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID?.trim()),
+      invoiceDefaults: {
+        businessEmail: process.env.BUSINESS_EMAIL || '',
+        copyEmail: process.env.INVOICE_COPY_EMAIL || process.env.BUSINESS_EMAIL || '',
+        today: todayInputValue(),
+        nextInvoiceNumber: currentInvoiceNumber(store),
+        emailMessage: defaultEmailMessage
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/invoice-sequence', (_req, res) => {
-  const store = readStore();
-  res.json({
-    offset: store.invoiceOffset,
-    nextInvoiceNumber: currentInvoiceNumber(store)
-  });
+app.get('/api/invoice-sequence', async (req, res, next) => {
+  try {
+    const drive = getDriveClient(req, res);
+    const store = await readAppStore(drive);
+    res.json({
+      offset: store.invoiceOffset,
+      nextInvoiceNumber: currentInvoiceNumber(store)
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post('/api/invoice-sequence', (req, res) => {
-  const store = resetInvoiceOffset(req.body.offset);
-  res.json({
-    offset: store.invoiceOffset,
-    nextInvoiceNumber: currentInvoiceNumber(store)
-  });
+app.post('/api/invoice-sequence', async (req, res, next) => {
+  try {
+    const drive = getDriveClient(req, res);
+    const store = await readAppStore(drive);
+    resetInvoiceOffsetInStore(store, req.body.offset);
+    await writeAppStore(drive, store);
+    res.json({
+      offset: store.invoiceOffset,
+      nextInvoiceNumber: currentInvoiceNumber(store)
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/jobs', async (req, res, next) => {
   try {
     const searchTerm = String(req.query.q || '').trim();
-    const store = readStore();
+    const drive = getDriveClient(req, res);
+    const store = await readAppStore(drive);
     const localJobs = store.jobs
       .filter((job) => {
         if (!searchTerm) {
@@ -827,10 +1258,9 @@ app.get('/api/jobs', async (req, res, next) => {
       .map((job) => ({
         ...job,
         source: 'local',
-        invoices: jobInvoices(job.key)
+        invoices: jobInvoicesFromStore(store, job.key)
       }));
 
-    const drive = getDriveClient(req);
     const driveFolders = await searchDriveFolders(drive, searchTerm);
     const knownFolderNames = new Set(localJobs.map((job) => job.folderName.toLowerCase()));
     const driveJobs = driveFolders
@@ -875,7 +1305,9 @@ app.get('/oauth2callback', async (req, res, next) => {
   try {
     const auth = createOAuthClient();
     const { tokens } = await auth.getToken(req.query.code);
-    req.session.tokens = saveGoogleTokens(tokens);
+    const mergedTokens = rememberRequestGoogleTokens(req, res, tokens);
+    auth.setCredentials(mergedTokens);
+    await readAppStore(google.drive({ version: 'v3', auth }));
     res.redirect('/');
   } catch (error) {
     next(error);
@@ -884,6 +1316,7 @@ app.get('/oauth2callback', async (req, res, next) => {
 
 app.post('/logout', (req, res) => {
   clearGoogleTokens();
+  clearGoogleTokenCookie(res);
   req.session.destroy(() => {
     res.redirect('/');
   });
@@ -891,7 +1324,7 @@ app.post('/logout', (req, res) => {
 
 app.post('/api/upload', upload.array('photos', 100), async (req, res, next) => {
   try {
-    const drive = getDriveClient(req);
+    const drive = getDriveClient(req, res);
     if (!drive) {
       removeTempFiles(req.files);
       res.status(401).json({ error: 'Please connect Google Drive first.' });
@@ -920,13 +1353,15 @@ app.post('/api/upload', upload.array('photos', 100), async (req, res, next) => {
     }
 
     const folder = await findOrCreateFolder(drive, folderName);
-    upsertJob({
+    const store = await readAppStore(drive);
+    upsertJobInStore(store, {
       vehicleName,
       licensePlate,
       folderName,
       folderId: folder.id,
       folderLink: folder.webViewLink
     });
+    await writeAppStore(drive, store);
 
     const uploaded = [];
 
@@ -950,15 +1385,16 @@ app.post('/api/invoice', async (req, res, next) => {
   let tempPdfPath = '';
 
   try {
-    const drive = getDriveClient(req);
-    const gmail = getGmailClient(req);
+    const drive = getDriveClient(req, res);
+    const gmail = getGmailClient(req, res);
 
     if (!drive || !gmail) {
       res.status(401).json({ error: 'Please connect Google Drive first.' });
       return;
     }
 
-    const invoice = buildInvoiceData(req.body);
+    const store = await readAppStore(drive);
+    const invoice = buildInvoiceData(req.body, store);
     const folder = await findOrCreateFolder(drive, invoice.folderName);
     const filename = `Invoice - ${sanitizeFileName(invoice.folderName)}.pdf`;
     tempPdfPath = path.join(invoiceDir, `${crypto.randomUUID()}-${filename}`);
@@ -979,7 +1415,7 @@ app.post('/api/invoice', async (req, res, next) => {
       filename,
       invoiceFile.webViewLink
     );
-    const job = upsertJob({
+    const job = upsertJobInStore(store, {
       vehicleName: invoice.vehicleName,
       licensePlate: invoice.licensePlate,
       folderName: invoice.folderName,
@@ -999,13 +1435,14 @@ app.post('/api/invoice', async (req, res, next) => {
       notes: invoice.notes,
       emailMessage: invoice.emailMessage
     });
-    const invoiceRecord = rememberInvoice(invoice, folder, invoiceFile);
-    const nextNumber = advanceInvoiceNumber();
+    const invoiceRecord = rememberInvoiceInStore(store, invoice, folder, invoiceFile);
+    const nextNumber = advanceInvoiceNumberInStore(store);
+    await writeAppStore(drive, store);
 
     res.json({
       folder,
       job,
-      history: jobInvoices(job.key),
+      history: jobInvoicesFromStore(store, job.key),
       invoiceRecord,
       invoiceFile,
       email: {
@@ -1036,6 +1473,10 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Drive photo uploader running at http://localhost:${port}`);
-});
+if (!isHostedOnVercel) {
+  app.listen(port, () => {
+    console.log(`Drive photo uploader running at http://localhost:${port}`);
+  });
+}
+
+export default app;
