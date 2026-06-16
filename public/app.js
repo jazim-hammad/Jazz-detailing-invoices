@@ -19,6 +19,7 @@ const invoiceFolderName = document.querySelector('#invoiceFolderName');
 const licensePlate = document.querySelector('#licensePlate');
 const customerName = document.querySelector('#customerName');
 const customerEmail = document.querySelector('#customerEmail');
+const customerPhone = document.querySelector('#customerPhone');
 const invoiceDate = document.querySelector('#invoiceDate');
 const invoiceNumber = document.querySelector('#invoiceNumber');
 const invoiceOffset = document.querySelector('#invoiceOffset');
@@ -30,6 +31,9 @@ const discount = document.querySelector('#discount');
 const taxRate = document.querySelector('#taxRate');
 const notes = document.querySelector('#notes');
 const emailMessage = document.querySelector('#emailMessage');
+const invoicePhotos = document.querySelector('#invoicePhotos');
+const invoicePhotoSummary = document.querySelector('#invoicePhotoSummary');
+const invoicePhotoPreviewGrid = document.querySelector('#invoicePhotoPreviewGrid');
 const jobSuggestions = document.querySelector('#jobSuggestions');
 const jobHistory = document.querySelector('#jobHistory');
 const jobHistoryList = document.querySelector('#jobHistoryList');
@@ -40,6 +44,8 @@ const money = new Intl.NumberFormat('en-US', {
 });
 let photoPreviewUrls = [];
 let selectedPhotoFiles = [];
+let invoicePhotoPreviewUrls = [];
+let selectedInvoicePhotoFiles = [];
 let knownJobs = [];
 let jobSearchTimer;
 let activeLoadedJob = null;
@@ -206,43 +212,25 @@ function fillInvoiceFromJob(job) {
   licensePlate.value = normalizeLicensePlate(job.licensePlate);
   folderName.value = invoiceFolderName.value;
   photoLicensePlate.value = licensePlate.value;
-
-  if (job.customerName) {
-    customerName.value = formatPersonName(job.customerName);
-  }
-
-  if (job.customerEmail) {
-    customerEmail.value = job.customerEmail;
-  }
-
-  if (job.copyEmail) {
-    copyEmail.value = job.copyEmail;
-  }
+  customerName.value = job.customerName ? formatPersonName(job.customerName) : '';
+  customerEmail.value = job.customerEmail || '';
+  customerPhone.value = job.customerPhone || '';
+  copyEmail.value = job.copyEmail || defaultCopyEmail || '';
+  dueDate.value = '';
 
   if (job.items?.length) {
     invoiceItems.innerHTML = '';
     job.items.forEach((item) => createItemRow(item));
+  } else {
+    invoiceItems.innerHTML = '';
+    createItemRow();
   }
 
-  if (job.discountType) {
-    discountType.value = job.discountType;
-  }
-
-  if (job.discount !== undefined) {
-    discount.value = job.discount;
-  }
-
-  if (job.taxRate !== undefined) {
-    taxRate.value = job.taxRate;
-  }
-
-  if (job.notes !== undefined) {
-    notes.value = job.notes;
-  }
-
-  if (job.emailMessage) {
-    emailMessage.value = job.emailMessage;
-  }
+  discountType.value = job.discountType || 'amount';
+  discount.value = job.discount !== undefined ? job.discount : '0';
+  taxRate.value = job.taxRate !== undefined ? job.taxRate : '0';
+  notes.value = job.notes || '';
+  emailMessage.value = job.emailMessage || defaultEmailMessageText || defaultEmailMessage();
 
   updateInvoiceTotal();
   renderJobHistory(job.invoices || []);
@@ -275,6 +263,7 @@ function clearInvoiceForm({ keepVehicle = false, keepPlate = false } = {}) {
   photoLicensePlate.value = plateValue;
   customerName.value = '';
   customerEmail.value = '';
+  customerPhone.value = '';
   dueDate.value = '';
   copyEmail.value = defaultCopyEmail || copyEmail.value;
   invoiceDate.value = defaultInvoiceDate || invoiceDate.value;
@@ -286,6 +275,7 @@ function clearInvoiceForm({ keepVehicle = false, keepPlate = false } = {}) {
   invoiceItems.innerHTML = '';
   createItemRow();
   renderJobHistory([]);
+  clearInvoicePhotoSelection();
   invoiceResult.hidden = true;
   invoiceResult.innerHTML = '';
   updateInvoiceTotal();
@@ -358,6 +348,63 @@ function renderPhotoPreviews() {
   });
 }
 
+function clearInvoicePhotoPreviews() {
+  invoicePhotoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  invoicePhotoPreviewUrls = [];
+  invoicePhotoPreviewGrid.innerHTML = '';
+}
+
+function syncInvoicePhotoInput() {
+  const transfer = new DataTransfer();
+  selectedInvoicePhotoFiles.forEach((file) => transfer.items.add(file));
+  invoicePhotos.files = transfer.files;
+}
+
+function updateInvoicePhotoSummary() {
+  const count = selectedInvoicePhotoFiles.length;
+  if (count === 0) {
+    invoicePhotoSummary.textContent = 'Optional before/after photos for this job.';
+    return;
+  }
+
+  invoicePhotoSummary.textContent = count === 1
+    ? '1 job photo attached.'
+    : `${count} job photos attached.`;
+}
+
+function removeSelectedInvoicePhoto(index) {
+  selectedInvoicePhotoFiles.splice(index, 1);
+  syncInvoicePhotoInput();
+  updateInvoicePhotoSummary();
+  renderInvoicePhotoPreviews();
+}
+
+function renderInvoicePhotoPreviews() {
+  clearInvoicePhotoPreviews();
+
+  selectedInvoicePhotoFiles.forEach((file, index) => {
+    const url = URL.createObjectURL(file);
+    invoicePhotoPreviewUrls.push(url);
+
+    const item = document.createElement('figure');
+    item.className = 'photo-preview';
+    item.innerHTML = `
+      <button class="photo-remove" type="button" title="Remove photo" aria-label="Remove ${escapeHtml(file.name)}">&times;</button>
+      <img src="${url}" alt="${escapeHtml(file.name)}" />
+      <figcaption>${escapeHtml(file.name)}</figcaption>
+    `;
+    item.querySelector('.photo-remove').addEventListener('click', () => removeSelectedInvoicePhoto(index));
+    invoicePhotoPreviewGrid.append(item);
+  });
+}
+
+function clearInvoicePhotoSelection() {
+  selectedInvoicePhotoFiles = [];
+  syncInvoicePhotoInput();
+  updateInvoicePhotoSummary();
+  clearInvoicePhotoPreviews();
+}
+
 photos.addEventListener('change', () => {
   const knownFiles = new Set(selectedPhotoFiles.map(photoFileKey));
   [...photos.files].forEach((file) => {
@@ -370,6 +417,20 @@ photos.addEventListener('change', () => {
   syncPhotoInput();
   updateFileSummary();
   renderPhotoPreviews();
+});
+
+invoicePhotos.addEventListener('change', () => {
+  const knownFiles = new Set(selectedInvoicePhotoFiles.map(photoFileKey));
+  [...invoicePhotos.files].forEach((file) => {
+    if (!knownFiles.has(photoFileKey(file))) {
+      selectedInvoicePhotoFiles.push(file);
+      knownFiles.add(photoFileKey(file));
+    }
+  });
+
+  syncInvoicePhotoInput();
+  updateInvoicePhotoSummary();
+  renderInvoicePhotoPreviews();
 });
 
 folderName.addEventListener('input', (event) => {
@@ -569,8 +630,8 @@ function renderPendingSend(secondsLeft) {
   renderResult(invoiceResult, `
     <div class="pending-send">
       <div>
-        <strong>Invoice queued to send.</strong>
-        <p>You have 10 seconds to cancel before the invoice is created, saved, and emailed.</p>
+        <strong>Invoice queued.</strong>
+        <p>You have 10 seconds to cancel before the invoice is created and saved to Drive.</p>
       </div>
       <div class="countdown-ring" style="--progress: ${secondsLeft * 10}%">${secondsLeft}</div>
       <button class="secondary danger-secondary" id="cancelSendButton" type="button">Cancel send</button>
@@ -589,7 +650,7 @@ function cancelPendingSend(message = 'Invoice send canceled.') {
   pendingSendInterval = undefined;
   setInvoiceFormLocked(false);
   invoiceButton.disabled = false;
-  invoiceButton.textContent = 'Create and email invoice';
+  invoiceButton.textContent = 'Create invoice';
 
   if (message) {
     renderResult(invoiceResult, escapeHtml(message));
@@ -600,16 +661,13 @@ async function sendInvoiceNow(body) {
   window.clearInterval(pendingSendInterval);
   pendingSendTimeout = undefined;
   pendingSendInterval = undefined;
-  invoiceButton.textContent = 'Sending invoice...';
-  renderResult(invoiceResult, 'Creating the invoice PDF, saving it to Drive, and emailing the customer.');
+  invoiceButton.textContent = 'Creating invoice...';
+  renderResult(invoiceResult, 'Creating the invoice PDF and saving everything to Drive.');
 
   try {
     const response = await fetch('/api/invoice', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
+      body
     });
 
     const data = await response.json();
@@ -618,25 +676,28 @@ async function sendInvoiceNow(body) {
       throw new Error(data.error || 'Invoice failed.');
     }
 
+    const photoCount = data.uploadedPhotos?.length || 0;
+    const invoiceDownloadLink = data.invoiceFile.webContentLink || data.invoiceFile.webViewLink;
     renderResult(invoiceResult, `
-      <strong>${escapeHtml(data.filename)} sent.</strong>
+      <strong>${data.emailed ? 'Invoice created and emailed.' : 'Invoice created. No email was sent.'}</strong>
       <p>Invoice: ${escapeHtml(data.invoiceNumber)}</p>
       <p>Total: ${money.format(data.total)}</p>
-      <p>
-        Drive copy:
-        <a href="${data.invoiceFile.webViewLink}" target="_blank" rel="noreferrer">
-          ${escapeHtml(data.invoiceFile.name)}
-        </a>
-      </p>
+      ${photoCount ? `<p>${photoCount} ${photoCount === 1 ? 'photo' : 'photos'} uploaded.</p>` : ''}
+      <div class="result-actions">
+        <a class="result-button" href="${data.invoiceFile.webViewLink}" target="_blank" rel="noreferrer">Open invoice in Drive</a>
+        <a class="result-button" href="${invoiceDownloadLink}" target="_blank" rel="noreferrer">Download invoice</a>
+        <a class="result-button" href="${data.folder.webViewLink}" target="_blank" rel="noreferrer">Open job folder</a>
+      </div>
     `);
     invoiceNumber.value = data.nextInvoiceNumber;
     renderJobHistory(data.history || []);
+    clearInvoicePhotoSelection();
   } catch (error) {
     renderResult(invoiceResult, escapeHtml(error.message), true);
   } finally {
     setInvoiceFormLocked(false);
     invoiceButton.disabled = false;
-    invoiceButton.textContent = 'Create and email invoice';
+    invoiceButton.textContent = 'Create invoice';
   }
 }
 
@@ -663,26 +724,18 @@ invoiceForm.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   const formData = new FormData(invoiceForm);
-  const body = {
-    folderName: formData.get('folderName'),
-    licensePlate: normalizeLicensePlate(formData.get('licensePlate')),
-    customerName: formatPersonName(formData.get('customerName')),
-    customerEmail: formData.get('customerEmail'),
-    copyEmail: formData.get('copyEmail'),
-    invoiceDate: formData.get('invoiceDate'),
-    dueDate: formData.get('dueDate'),
-    discountType: formData.get('discountType'),
-    discount: formData.get('discount'),
-    taxRate: formData.get('taxRate'),
-    notes: formData.get('notes'),
-    emailMessage: formData.get('emailMessage'),
-    items: collectItems()
-  };
+  formData.set('folderName', String(formData.get('folderName') || '').trim());
+  formData.set('licensePlate', normalizeLicensePlate(formData.get('licensePlate')));
+  formData.set('customerName', formatPersonName(formData.get('customerName')));
+  formData.set('customerEmail', String(formData.get('customerEmail') || '').trim());
+  formData.set('customerPhone', String(formData.get('customerPhone') || '').trim());
+  formData.set('copyEmail', String(formData.get('copyEmail') || '').trim());
+  formData.set('items', JSON.stringify(collectItems()));
 
-  scheduleInvoiceSend(body);
+  scheduleInvoiceSend(formData);
 });
 
 setTheme(localStorage.getItem('theme') || 'light');
 createItemRow();
-activateTab(window.location.hash === '#invoice' ? 'invoicePanel' : 'photosPanel');
+activateTab(window.location.hash === '#photos' ? 'photosPanel' : 'invoicePanel');
 loadStatus();

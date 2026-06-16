@@ -221,6 +221,7 @@ label {
 
 input[type="text"],
 input[type="email"],
+input[type="tel"],
 input[type="date"],
 input[type="number"],
 select,
@@ -234,6 +235,7 @@ textarea {
 
 input[type="text"],
 input[type="email"],
+input[type="tel"],
 input[type="date"],
 input[type="number"],
 select {
@@ -249,6 +251,7 @@ textarea {
 
 input[type="text"]:focus,
 input[type="email"]:focus,
+input[type="tel"]:focus,
 input[type="date"]:focus,
 input[type="number"]:focus,
 select:focus,
@@ -272,6 +275,10 @@ input[readonly] {
   text-align: center;
   background: var(--panel-strong);
   cursor: pointer;
+}
+
+.compact-dropzone {
+  min-height: 148px;
 }
 
 .dropzone input {
@@ -489,6 +496,27 @@ input[readonly] {
   font-weight: 800;
 }
 
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.result-button {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--field-border);
+  border-radius: 6px;
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--panel-strong);
+  text-decoration: none;
+  font-weight: 850;
+}
+
 .history-item a {
   color: var(--accent);
   font-weight: 850;
@@ -597,6 +625,7 @@ input[readonly] {
 
   input[type="text"],
   input[type="email"],
+  input[type="tel"],
   input[type="date"],
   input[type="number"],
   select {
@@ -611,6 +640,10 @@ input[readonly] {
   .dropzone {
     min-height: 154px;
     padding: 20px 16px;
+  }
+
+  .compact-dropzone {
+    min-height: 128px;
   }
 
   .drop-title {
@@ -666,6 +699,15 @@ input[readonly] {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .result-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .result-button {
+    min-height: 48px;
   }
 
   .pending-send {

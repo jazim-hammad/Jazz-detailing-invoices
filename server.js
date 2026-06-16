@@ -274,11 +274,12 @@ function normalizeLicensePlate(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
 }
 
-function buildJobFolderName(vehicleName, licensePlate = '') {
+function buildJobFolderName(vehicleName, licensePlate = '', fallbackId = '') {
   const vehicle = normalizeVehicleName(vehicleName);
   const plate = normalizeLicensePlate(licensePlate);
+  const fallback = normalizeFolderName(fallbackId || '');
 
-  return normalizeFolderName([vehicle, plate].filter(Boolean).join(' - '));
+  return normalizeFolderName([vehicle, plate || fallback].filter(Boolean).join(' - '));
 }
 
 function sanitizeFileName(name) {
@@ -445,7 +446,7 @@ function mergeStores(driveStore, localStore) {
   const invoicesByKey = new Map();
 
   for (const job of [...drive.jobs, ...local.jobs]) {
-    const key = job.key || jobKey(job.vehicleName, job.licensePlate);
+    const key = job.key || jobKey(job.vehicleName, job.licensePlate, job.folderName);
     jobsByKey.set(key, newestRecord(jobsByKey.get(key), {
       ...job,
       key
@@ -705,12 +706,16 @@ function advanceInvoiceNumber() {
   return currentInvoiceNumber(store);
 }
 
-function jobKey(vehicleName, licensePlate = '') {
-  return `${normalizeVehicleName(vehicleName).toLowerCase()}|${normalizeLicensePlate(licensePlate).toLowerCase()}`;
+function jobKey(vehicleName, licensePlate = '', folderName = '') {
+  const vehicle = normalizeVehicleName(vehicleName).toLowerCase();
+  const plate = normalizeLicensePlate(licensePlate).toLowerCase();
+  const fallback = normalizeFolderName(folderName || '').toLowerCase();
+
+  return `${vehicle}|${plate || fallback}`;
 }
 
 function upsertJobInStore(store, jobUpdate) {
-  const key = jobKey(jobUpdate.vehicleName, jobUpdate.licensePlate);
+  const key = jobKey(jobUpdate.vehicleName, jobUpdate.licensePlate, jobUpdate.folderName);
   const now = new Date().toISOString();
   const existingIndex = store.jobs.findIndex((job) => job.key === key);
   const existing = existingIndex >= 0 ? store.jobs[existingIndex] : {};
@@ -739,7 +744,7 @@ function upsertJob(jobUpdate) {
 }
 
 function rememberInvoiceInStore(store, invoice, folder, invoiceFile) {
-  const key = jobKey(invoice.vehicleName, invoice.licensePlate);
+  const key = jobKey(invoice.vehicleName, invoice.licensePlate, invoice.folderName);
   const record = {
     id: crypto.randomUUID(),
     jobKey: key,
@@ -749,11 +754,13 @@ function rememberInvoiceInStore(store, invoice, folder, invoiceFile) {
     folderName: invoice.folderName,
     customerName: invoice.customerName,
     customerEmail: invoice.customerEmail,
+    customerPhone: invoice.customerPhone,
     total: invoice.total,
     invoiceDate: invoice.invoiceDate,
     sentAt: new Date().toISOString(),
     fileName: invoiceFile.name,
     fileLink: invoiceFile.webViewLink,
+    downloadLink: invoiceFile.webContentLink || invoiceFile.webViewLink,
     folderLink: folder.webViewLink
   };
 
@@ -880,25 +887,43 @@ async function uploadDriveFile(drive, { filePath, filename, mimeType, folderId }
       body: fs.createReadStream(filePath)
     },
     supportsAllDrives: true,
-    fields: 'id, name, webViewLink'
+    fields: 'id, name, webViewLink, webContentLink'
   });
 
   return result.data;
 }
 
+function parseInvoiceItems(items) {
+  if (Array.isArray(items)) {
+    return items;
+  }
+
+  if (typeof items === 'string' && items.trim()) {
+    try {
+      const parsed = JSON.parse(items);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
 function buildInvoiceData(body, store = readStore()) {
   const vehicleName = normalizeVehicleName(body.folderName || body.vehicleName || '');
   const licensePlate = normalizeLicensePlate(body.licensePlate);
-  const folderName = buildJobFolderName(vehicleName, licensePlate);
+  const invoiceNumber = currentInvoiceNumber(store);
+  const folderName = buildJobFolderName(vehicleName, licensePlate, invoiceNumber);
   const customerName = formatPersonName(body.customerName);
   const customerEmail = String(body.customerEmail || '').trim();
+  const customerPhone = String(body.customerPhone || '').trim();
   const copyEmail = String(
     body.copyEmail || process.env.INVOICE_COPY_EMAIL || process.env.BUSINESS_EMAIL || ''
   ).trim();
   const businessEmail = String(process.env.BUSINESS_EMAIL || copyEmail).trim();
   const invoiceDate = body.invoiceDate || todayInputValue();
-  const invoiceNumber = currentInvoiceNumber(store);
-  const rawItems = Array.isArray(body.items) ? body.items : [];
+  const rawItems = parseInvoiceItems(body.items);
 
   const items = rawItems
     .map((item) => {
@@ -919,23 +944,19 @@ function buildInvoiceData(body, store = readStore()) {
     throw new Error('Enter the vehicle for this invoice.');
   }
 
-  if (!licensePlate) {
-    throw new Error('Enter the license plate for this invoice.');
-  }
-
   if (!customerName) {
     throw new Error('Enter the customer name.');
   }
 
-  if (!isEmail(customerEmail)) {
+  if (customerEmail && !isEmail(customerEmail)) {
     throw new Error('Enter a valid customer email.');
   }
 
-  if (!isEmail(copyEmail)) {
+  if (copyEmail && !isEmail(copyEmail)) {
     throw new Error('Enter a valid copy email for yourself.');
   }
 
-  if (!isEmail(businessEmail)) {
+  if (customerEmail && !isEmail(businessEmail)) {
     throw new Error('Set BUSINESS_EMAIL in .env or enter a valid copy email.');
   }
 
@@ -958,6 +979,7 @@ function buildInvoiceData(body, store = readStore()) {
     folderName,
     customerName,
     customerEmail,
+    customerPhone,
     copyEmail,
     businessEmail,
     businessName: process.env.BUSINESS_NAME || 'Auto Detail Invoice',
@@ -1016,13 +1038,24 @@ async function createInvoicePdf(invoice, filePath) {
     doc.strokeColor('#000000');
 
     doc.font('Helvetica-Bold').fontSize(11).text('Bill To', 50, 150);
-    doc.font('Helvetica').fontSize(11).text(invoice.customerName, 50, 168);
-    doc.text(invoice.customerEmail, 50, 184);
+    doc.font('Helvetica').fontSize(11);
+    let billToY = 168;
+    doc.text(invoice.customerName, 50, billToY);
+
+    if (invoice.customerEmail) {
+      billToY += 16;
+      doc.text(invoice.customerEmail, 50, billToY);
+    }
+
+    if (invoice.customerPhone) {
+      billToY += 16;
+      doc.text(invoice.customerPhone, 50, billToY);
+    }
 
     doc.font('Helvetica-Bold').text('Job', 300, 150);
     doc.font('Helvetica').text(invoice.folderName, 390, 150, { width: 170 });
-    doc.font('Helvetica-Bold').text('Plate', 300, 184);
-    doc.font('Helvetica').text(invoice.licensePlate, 390, 184);
+    doc.font('Helvetica-Bold').text(invoice.licensePlate ? 'Plate' : 'Job ID', 300, 184);
+    doc.font('Helvetica').text(invoice.licensePlate || invoice.invoiceNumber, 390, 184);
     doc.font('Helvetica-Bold').text('Invoice #', 300, 202);
     doc.font('Helvetica').text(invoice.invoiceNumber, 390, 202);
     doc.font('Helvetica-Bold').text('Date', 300, 220);
@@ -1130,7 +1163,7 @@ async function sendInvoiceEmail(gmail, invoice, filePath, filename, driveLink) {
     invoice.emailMessage || defaultEmailMessage,
     '',
     `Vehicle: ${invoice.vehicleName}`,
-    `License plate: ${invoice.licensePlate}`,
+    invoice.licensePlate ? `License plate: ${invoice.licensePlate}` : `Job ID: ${invoice.invoiceNumber}`,
     `Invoice: ${invoice.invoiceNumber}`,
     `Total: ${formatMoney(invoice.total)}`,
     invoice.dueDate ? `Due: ${formatDate(invoice.dueDate)}` : '',
@@ -1140,14 +1173,21 @@ async function sendInvoiceEmail(gmail, invoice, filePath, filename, driveLink) {
     'Thank you.'
   ].filter((line) => line !== '').join('\n');
   const attachment = await fs.promises.readFile(filePath);
-  const message = [
+  const headers = [
     `From: ${formatEmailAddress(invoice.businessEmail, invoice.businessName)}`,
     `To: ${formatEmailAddress(invoice.customerEmail, invoice.customerName)}`,
-    `Bcc: ${formatEmailAddress(invoice.copyEmail)}`,
     `Reply-To: ${formatEmailAddress(invoice.businessEmail, invoice.businessName)}`,
     `Subject: ${subject}`,
     'MIME-Version: 1.0',
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`
+  ];
+
+  if (invoice.copyEmail) {
+    headers.splice(2, 0, `Bcc: ${formatEmailAddress(invoice.copyEmail)}`);
+  }
+
+  const message = [
+    ...headers,
     '',
     `--${boundary}`,
     'Content-Type: text/plain; charset="UTF-8"',
@@ -1250,7 +1290,8 @@ app.get('/api/jobs', async (req, res, next) => {
           job.licensePlate,
           job.folderName,
           job.customerName,
-          job.customerEmail
+          job.customerEmail,
+          job.customerPhone
         ].join(' ').toLowerCase();
         return haystack.includes(searchTerm.toLowerCase());
       })
@@ -1341,12 +1382,6 @@ app.post('/api/upload', upload.array('photos', 100), async (req, res, next) => {
       return;
     }
 
-    if (!licensePlate) {
-      removeTempFiles(req.files);
-      res.status(400).json({ error: 'Enter a license plate for this detail job.' });
-      return;
-    }
-
     if (!req.files?.length) {
       res.status(400).json({ error: 'Choose at least one photo.' });
       return;
@@ -1381,20 +1416,26 @@ app.post('/api/upload', upload.array('photos', 100), async (req, res, next) => {
   }
 });
 
-app.post('/api/invoice', async (req, res, next) => {
+app.post('/api/invoice', upload.array('photos', 100), async (req, res, next) => {
   let tempPdfPath = '';
 
   try {
     const drive = getDriveClient(req, res);
-    const gmail = getGmailClient(req, res);
 
-    if (!drive || !gmail) {
+    if (!drive) {
       res.status(401).json({ error: 'Please connect Google Drive first.' });
       return;
     }
 
     const store = await readAppStore(drive);
     const invoice = buildInvoiceData(req.body, store);
+    const gmail = invoice.customerEmail ? getGmailClient(req, res) : null;
+
+    if (invoice.customerEmail && !gmail) {
+      res.status(401).json({ error: 'Please connect Google before emailing invoices.' });
+      return;
+    }
+
     const folder = await findOrCreateFolder(drive, invoice.folderName);
     const filename = `Invoice - ${sanitizeFileName(invoice.folderName)}.pdf`;
     tempPdfPath = path.join(invoiceDir, `${crypto.randomUUID()}-${filename}`);
@@ -1408,13 +1449,21 @@ app.post('/api/invoice', async (req, res, next) => {
       folderId: folder.id
     });
 
-    const sentMessage = await sendInvoiceEmail(
-      gmail,
-      invoice,
-      tempPdfPath,
-      filename,
-      invoiceFile.webViewLink
-    );
+    const uploadedPhotos = [];
+
+    for (const file of req.files || []) {
+      uploadedPhotos.push(await uploadPhoto(drive, file, folder.id));
+    }
+
+    const sentMessage = invoice.customerEmail
+      ? await sendInvoiceEmail(
+        gmail,
+        invoice,
+        tempPdfPath,
+        filename,
+        invoiceFile.webViewLink
+      )
+      : null;
     const job = upsertJobInStore(store, {
       vehicleName: invoice.vehicleName,
       licensePlate: invoice.licensePlate,
@@ -1423,6 +1472,7 @@ app.post('/api/invoice', async (req, res, next) => {
       folderLink: folder.webViewLink,
       customerName: invoice.customerName,
       customerEmail: invoice.customerEmail,
+      customerPhone: invoice.customerPhone,
       copyEmail: invoice.copyEmail,
       items: invoice.items.map((item) => ({
         description: item.description,
@@ -1445,9 +1495,11 @@ app.post('/api/invoice', async (req, res, next) => {
       history: jobInvoicesFromStore(store, job.key),
       invoiceRecord,
       invoiceFile,
-      email: {
+      uploadedPhotos,
+      emailed: Boolean(sentMessage),
+      email: sentMessage ? {
         id: sentMessage.id
-      },
+      } : null,
       filename,
       invoiceNumber: invoice.invoiceNumber,
       nextInvoiceNumber: nextNumber,
@@ -1456,6 +1508,7 @@ app.post('/api/invoice', async (req, res, next) => {
   } catch (error) {
     next(error);
   } finally {
+    removeTempFiles(req.files);
     if (tempPdfPath) {
       fs.promises.unlink(tempPdfPath).catch(() => {});
     }
